@@ -6,7 +6,7 @@ function MyAddon_ToggleGroundClutter()
     if currentSetting  < 9 then
         SetCVar("graphicsGroundClutter", 9)
     else
-        SetCVar("graphicsGroundClutter", 1)
+        SetCVar("graphicsGroundClutter", 0)
     end
 end
 
