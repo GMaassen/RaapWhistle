@@ -9,6 +9,5 @@
 ## X-Credits: Rabbit, copystring
 
 embeds.xml
-
 LibDBIcon-1.0\lib.xml
 

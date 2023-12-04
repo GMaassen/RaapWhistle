@@ -1,3 +1,5 @@
+SetCVar("graphicsGroundClutter", 9)
+
 function ToggleGroundClutter()
     local currentSetting = tonumber(GetCVar("graphicsGroundClutter"))
     if currentSetting < 9 then
@@ -21,5 +23,6 @@ local miniButton = LibStub("LibDataBroker-1.1"):NewDataObject("RaapWhistle", {
         tooltip:AddLine("RaapWhistle")
     end
 })
-local icon = LibStub("LibDBIcon-1.0", true)
+
+local icon = LibStub("LibDBIcon-1.0")
 icon:Register("RaapWhistle", miniButton, RaapWhistleDB)
