@@ -86,26 +86,51 @@ local icon = LibStub("LibDBIcon-1.0")
 icon:Register("RaapWhistle", miniButton, RaapWhistleDB)
 
 -- Questie integration: auto-toggle ground clutter based on quest state (placeholder)
-local function IsWhitelistedQuest(questId)
+local function GetCurrentZoneID()
+    return C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
+end
+
+local function IsWhitelistedQuestZone(questId, zoneId)
     local whitelist = RaapWhistleDB and RaapWhistleDB.profile and RaapWhistleDB.profile.questWhitelist or {}
-    return whitelist[questId] == true
+    return whitelist[questId] and whitelist[questId] == zoneId
 end
 
 local function OnQuestieEvent(event, questId, ...)
-    -- Only autotoggle for whitelisted quests
-    if not IsWhitelistedQuest(questId) then return end
-    if event == "Questie:ObjectiveComplete" then
-        if RaapWhistleDB and RaapWhistleDB.profile and RaapWhistleDB.profile.autoClutter then
-            SetCVar("graphicsGroundClutter", RaapWhistleDB.profile.clutterHigh or 9)
-            print("RaapWhistle: Quest objective complete, ground clutter restored.")
+    local zoneId = GetCurrentZoneID()
+    local whitelist = RaapWhistleDB and RaapWhistleDB.profile and RaapWhistleDB.profile.questWhitelist or {}
+    if event == "Questie:ObjectiveStart" then
+        if whitelist[questId] then
+            whitelist[questId] = zoneId
+            print("RaapWhistle: Tracking quest " .. questId .. " in zone " .. tostring(zoneId))
         end
-    elseif event == "Questie:ObjectiveStart" then
-        if RaapWhistleDB and RaapWhistleDB.profile and RaapWhistleDB.profile.autoClutter then
-            SetCVar("graphicsGroundClutter", RaapWhistleDB.profile.clutterLow or 0)
-            print("RaapWhistle: Quest objective started, ground clutter reduced.")
+    elseif event == "Questie:ObjectiveComplete" then
+        if whitelist[questId] then
+            whitelist[questId] = nil
+            SetCVar("graphicsGroundClutter", RaapWhistleDB.profile.clutterHigh or 9)
+            print("RaapWhistle: Quest " .. questId .. " completed, ground clutter restored and quest removed from whitelist.")
         end
     end
 end
+
+local function OnZoneChanged()
+    local zoneId = GetCurrentZoneID()
+    local whitelist = RaapWhistleDB and RaapWhistleDB.profile and RaapWhistleDB.profile.questWhitelist or {}
+    for questId, trackedZoneId in pairs(whitelist) do
+        if trackedZoneId == zoneId then
+            SetCVar("graphicsGroundClutter", RaapWhistleDB.profile.clutterLow or 0)
+            print("RaapWhistle: In tracked zone for quest " .. questId .. ", ground clutter reduced.")
+            return
+        end
+    end
+    SetCVar("graphicsGroundClutter", RaapWhistleDB.profile.clutterHigh or 9)
+    print("RaapWhistle: Left tracked quest zone, ground clutter restored.")
+end
+
+local zoneFrame = CreateFrame("Frame")
+zoneFrame:RegisterEvent("ZONE_CHANGED")
+zoneFrame:RegisterEvent("ZONE_CHANGED_INDOORS")
+zoneFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+zoneFrame:SetScript("OnEvent", OnZoneChanged)
 
 -- Try to hook into Questie events if Questie is loaded
 local questieFrame = _G["Questie"]
