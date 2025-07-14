@@ -113,8 +113,9 @@ local function OnQuestieEvent(event, questId, ...)
 end
 
 local function OnZoneChanged()
+    if not RaapWhistleDB or not RaapWhistleDB.profile then return end
     local zoneId = GetCurrentZoneID()
-    local whitelist = RaapWhistleDB and RaapWhistleDB.profile and RaapWhistleDB.profile.questWhitelist or {}
+    local whitelist = RaapWhistleDB.profile.questWhitelist or {}
     for questId, trackedZoneId in pairs(whitelist) do
         if trackedZoneId == zoneId then
             SetCVar("graphicsGroundClutter", RaapWhistleDB.profile.clutterLow or 0)
@@ -154,6 +155,9 @@ if AceConfig and AceConfigDialog and AceDB then
         }
     }
     local db = AceDB:New("RaapWhistleDB", defaults, true)
+    if not db or not db.profile then
+        db = { profile = defaults.profile }
+    end
     local options = {
         name = "RaapWhistle",
         type = "group",
@@ -163,39 +167,41 @@ if AceConfig and AceConfigDialog and AceDB then
                 type = "toggle",
                 name = L["Auto Clutter Toggle"],
                 desc = L["Automatically toggle ground clutter based on quest state"],
-                get = function() return db.profile.autoClutter end,
-                set = function(_, val) db.profile.autoClutter = val end,
+                get = function() return db.profile and db.profile.autoClutter end,
+                set = function(_, val) if db.profile then db.profile.autoClutter = val end end,
             },
             clutterLow = {
                 type = "range",
                 name = L["Low Clutter Value"],
                 desc = L["Value for reduced ground clutter"],
                 min = 0, max = 9, step = 1,
-                get = function() return db.profile.clutterLow end,
-                set = function(_, val) db.profile.clutterLow = val end,
+                get = function() return db.profile and db.profile.clutterLow end,
+                set = function(_, val) if db.profile then db.profile.clutterLow = val end end,
             },
             clutterHigh = {
                 type = "range",
                 name = L["High Clutter Value"],
                 desc = L["Value for restored ground clutter"],
                 min = 0, max = 9, step = 1,
-                get = function() return db.profile.clutterHigh end,
-                set = function(_, val) db.profile.clutterHigh = val end,
+                get = function() return db.profile and db.profile.clutterHigh end,
+                set = function(_, val) if db.profile then db.profile.clutterHigh = val end end,
             },
             questWhitelist = {
                 type = "input",
                 name = "Quest Whitelist",
                 desc = "Comma-separated quest IDs to autotoggle",
                 get = function()
-                    local wl = db.profile.questWhitelist or {}
+                    local wl = db.profile and db.profile.questWhitelist or {}
                     local ids = {}
                     for k in pairs(wl) do table.insert(ids, k) end
                     return table.concat(ids, ",")
                 end,
                 set = function(_, val)
-                    db.profile.questWhitelist = {}
-                    for id in string.gmatch(val, "%d+") do
-                        db.profile.questWhitelist[tonumber(id)] = true
+                    if db.profile then
+                        db.profile.questWhitelist = {}
+                        for id in string.gmatch(val, "%d+") do
+                            db.profile.questWhitelist[tonumber(id)] = true
+                        end
                     end
                 end,
             },

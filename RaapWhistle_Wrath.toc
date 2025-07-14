@@ -1,0 +1,10 @@
+## Interface: 30401
+## Version: 0.0.1
+## Title: RaapWhistle
+## Notes: Change the ground clutter when in need
+## Author: WilMartin
+## SavedVariables: RaapWhistleDB
+
+LibDBIcon-1.0\embeds.xml
+LibDBIcon-1.0\LibDBIcon-1.0\LibDBIcon-1.0.lua
+RaapWhistle.lua
