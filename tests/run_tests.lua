@@ -1,0 +1,282 @@
+-- Offline test suite for RaapWhistle. Run from the addon root:
+--     lua tests/run_tests.lua
+-- These exercise the addon against a mock client (tests/wow_env.lua). They are
+-- not a substitute for testing in game, but they cover the logic that does not
+-- depend on real Blizzard event payloads.
+
+local say = print  -- the mock client replaces _G.print, so keep the real one
+
+local env_module = dofile("tests/wow_env.lua")
+env_module.ROOT = "."
+
+local passed, failed, skipped = 0, 0, 0
+
+local function test(name, fn)
+    local ok, err = pcall(fn)
+    if ok then
+        passed = passed + 1
+        say(string.format("  ok   %s", name))
+    else
+        failed = failed + 1
+        say(string.format("  FAIL %s", name))
+        say(string.format("       %s", tostring(err)))
+    end
+end
+
+local function eq(actual, expected, what)
+    if actual ~= expected then
+        error(string.format("%s: expected %s, got %s",
+            what or "value", tostring(expected), tostring(actual)), 2)
+    end
+end
+
+-- Boots an env, loads the addon, and runs ADDON_LOADED + PLAYER_LOGIN.
+local function boot(opts)
+    local e = env_module.new(opts)
+    e:load()
+    e:fire("ADDON_LOADED", "RaapWhistle")
+    e:fire("PLAYER_LOGIN")
+    return e
+end
+
+say("")
+say("RaapWhistle offline tests")
+say("")
+
+-- The API surface that actually runs on Wrath Classic 3.4.x ------------------
+
+test("classic: loads and stays quiet with an empty whitelist", function()
+    local e = boot({ api = "classic" })
+    eq(e:clutter(), "9", "clutter untouched at login")
+    eq(e:printCount(), 0, "print count")
+end)
+
+test("classic: add learns the current zone and drops clutter", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e.zone = 100
+    e:fire("QUEST_ACCEPTED", 1, 1234)
+    eq(e:clutter(), "9", "non-whitelisted quest ignored")
+    e:slash("add 1")
+    eq(e:clutter(), "0", "clutter lowered in the learned zone")
+end)
+
+test("classic: leaving and re-entering the tracked zone flips clutter", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e:slash("add 1")
+    eq(e:clutter(), "0", "low in tracked zone")
+    e.zone = 200
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    eq(e:clutter(), "9", "restored outside tracked zone")
+    e.zone = 100
+    e:fire("ZONE_CHANGED")
+    eq(e:clutter(), "0", "lowered again on return")
+end)
+
+test("classic: turn-in restores clutter but keeps the whitelist entry", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e:slash("add 1")
+    e.questLog = {}
+    e:fire("QUEST_TURNED_IN", 1234)
+    eq(e:clutter(), "9", "restored after turn-in")
+    e.questLog = { 1234 }
+    e:fire("QUEST_ACCEPTED", 1, 1234)
+    eq(e:clutter(), "0", "still whitelisted when re-accepted")
+end)
+
+test("classic: quest ID resolves from the quest log selection", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234, 5678 }
+    e.selectedIndex = 2
+    e:slash("add")
+    eq(e:clutter(), "0", "selected quest whitelisted and active here")
+end)
+
+-- Retail surface -------------------------------------------------------------
+
+test("retail: add and zone tracking work through C_QuestLog", function()
+    local e = boot({ api = "retail" })
+    e.questLog = { 1234 }
+    e:slash("add 1")
+    eq(e:clutter(), "0", "low in tracked zone")
+    e.zone = 999
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    eq(e:clutter(), "9", "restored elsewhere")
+end)
+
+test("retail: QUEST_ACCEPTED single-arg payload is handled", function()
+    local e = boot({ api = "retail" })
+    e.questLog = { 4242 }
+    e:slash("add 1")
+    e.questLog = {}
+    e:fire("QUEST_REMOVED", 4242)
+    eq(e:clutter(), "9", "restored on removal")
+    e.questLog = { 4242 }
+    e.zone = 555
+    e:fire("QUEST_ACCEPTED", 4242)
+    eq(e:clutter(), "0", "new zone learned from single-arg payload")
+end)
+
+-- Settings behaviour ---------------------------------------------------------
+
+test("autoClutter=false suppresses automatic changes", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e:slash("add 1")
+    eq(e:clutter(), "0", "low to begin with")
+    e:slash("toggle")
+    eq(e:clutter(), "9", "manual toggle wins")
+    RaapWhistleDB.profiles["Default"].autoClutter = false
+    e.zone = 300
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    e.zone = 100
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    eq(e:clutter(), "9", "auto toggle stayed off")
+end)
+
+test("manual toggle works even with autoClutter off", function()
+    local e = boot({ api = "classic" })
+    RaapWhistleDB.profiles["Default"].autoClutter = false
+    e:slash("toggle")
+    eq(e:clutter(), "0", "manual toggle ignores autoClutter")
+    e:slash("toggle")
+    eq(e:clutter(), "9", "and toggles back")
+end)
+
+test("repeated zone events produce no chat spam", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e:slash("add 1")
+    e:clearPrints()
+    for _ = 1, 20 do
+        e:fire("ZONE_CHANGED_INDOORS")
+        e:fire("ZONE_CHANGED")
+    end
+    eq(e:printCount(), 0, "silent while state is unchanged")
+    eq(e:clutter(), "0", "still low")
+end)
+
+test("verbose=false stays silent even when the state really changes", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e:slash("add 1")
+    eq(e:clutter(), "0", "low in the tracked zone")
+    e:clearPrints()
+    e.zone = 700
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    eq(e:clutter(), "9", "state actually changed")
+    eq(e:printCount(), 0, "but nothing was announced")
+end)
+
+test("verbose=true announces automatic changes", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e:slash("add 1")
+    RaapWhistleDB.profiles["Default"].verbose = true
+    e:clearPrints()
+    e.zone = 700
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    if e:printCount() < 1 then error("expected an announcement when verbose") end
+end)
+
+-- Persistence ----------------------------------------------------------------
+
+test("legacy whitelist values are migrated on load", function()
+    local saved = {
+        profileKeys = { ["Tester - TestRealm"] = "Default" },
+        profiles = { Default = { questWhitelist = { [1234] = true, [5678] = 200 } } },
+    }
+    boot({ api = "classic", savedVars = saved })
+    local wl = saved.profiles.Default.questWhitelist
+    if type(wl[1234]) ~= "table" then error("1234 not migrated to a table") end
+    eq(next(wl[1234].zones), nil, "no zone learned for the boolean entry")
+    eq(wl[5678].zones[200], true, "zoneID value became a zones entry")
+end)
+
+test("whitelist survives a reload", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e:slash("add 1")
+    local saved = RaapWhistleDB
+    local e2 = boot({ api = "classic", savedVars = saved })
+    e2.questLog = { 1234 }
+    e2.zone = 100
+    e2:fire("QUEST_LOG_UPDATE")
+    e2:flush(2)
+    eq(e2:clutter(), "0", "whitelist and learned zone persisted")
+end)
+
+-- Degraded environments ------------------------------------------------------
+
+test("works with no LibStub at all", function()
+    local e = boot({ api = "classic" })
+    if _G.LibStub ~= nil then error("expected no LibStub in this env") end
+    e.questLog = { 1234 }
+    e:slash("add 1")
+    eq(e:clutter(), "0", "core behaviour intact without Ace3")
+    e:slash("")
+end)
+
+test("real AceDB-3.0 is used when present", function()
+    local e = boot({ api = "classic", ace = true })
+    e.questLog = { 1234 }
+    e:slash("add 1")
+    eq(e:clutter(), "0", "AceDB path behaves the same")
+end)
+
+test("a failing SetCVar does not error and reports once", function()
+    local e = boot({ api = "classic", cvarFail = true })
+    e:clearPrints()
+    e:slash("toggle")
+    if e:printCount() < 1 then error("expected a failure message") end
+end)
+
+test("the clutter ceiling is corrected when the client clamps", function()
+    local e = boot({ api = "classic", cvarCeiling = 3 })
+    e:slash("toggle")
+    eq(e:clutter(), "0", "low applied")
+    e:slash("toggle")
+    eq(e:clutter(), "3", "client ceiling respected")
+end)
+
+test("a missing map ID does not break anything", function()
+    local e = boot({ api = "classic", noMap = true })
+    e.questLog = { 1234 }
+    e:slash("add 1")
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    eq(e:clutter(), "9", "no zone means no automatic lowering")
+end)
+
+test("works without C_Timer", function()
+    local e = boot({ api = "classic", noTimer = true })
+    e.questLog = { 1234 }
+    e:slash("add 1")
+    e:fire("QUEST_LOG_UPDATE")
+    eq(e:clutter(), "0", "scan still ran without a timer")
+end)
+
+-- Slash command surface ------------------------------------------------------
+
+test("slash: list, remove and unknown subcommands behave", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e:slash("add 1")
+    e:clearPrints()
+    e:slash("list")
+    if e:printCount() < 1 then error("list printed nothing") end
+    e:slash("remove 1234")
+    eq(e:clutter(), "9", "removing the only tracked quest restores clutter")
+    e:clearPrints()
+    e:slash("list")
+    eq(e:printCount(), 1, "empty whitelist reports once")
+    e:clearPrints()
+    e:slash("nonsense")
+    eq(e:printCount(), 1, "unknown subcommand prints usage")
+end)
+
+say("")
+say(string.format("%d passed, %d failed, %d skipped", passed, failed, skipped))
+say("")
+os.exit(failed == 0 and 0 or 1)
