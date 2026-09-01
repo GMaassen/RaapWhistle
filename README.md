@@ -89,5 +89,9 @@ client.
 
 `Ace3/` and `LibDBIcon-1.0/` are vendored, unmodified copies of third-party
 libraries and are distributed under their own licenses (see `Ace3/LICENSE.txt` and
-the LibDBIcon source headers). They are not covered by whatever license the rest of
-this addon carries.
+the LibDBIcon source headers). They are not covered by this addon's license.
+
+## License
+
+MIT - see `LICENSE`. This covers the addon itself (`RaapWhistle.lua`, the `.toc`
+files, `Bindings.xml`, and `tests/`), not the vendored libraries above.
