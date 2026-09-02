@@ -1,4 +1,4 @@
-## Interface: 120100, 50504, 40402, 38002, 30405, 20506, 11509
+## Interface: 120100
 ## Title: RaapWhistle
 ## Notes: Temporarily lowers ground clutter so you can spot ground-spawn quest objects, then restores it.
 ## Author: WilMartin
@@ -7,10 +7,6 @@
 ## SavedVariables: RaapWhistleDB
 ## X-Category: Interface Enhancements
 ## X-Website: https://github.com/GMaassen/RaapWhistle
-
-# Generic fallback .toc: used by any client with no matching flavor-specific file
-# (e.g. Cataclysm and Mists Classic). Keep the interface list in sync with the
-# per-flavor .toc files.
 
 # Ace3 (embedded). Loaded before LibDBIcon's embeds.xml so that Ace3's copies of
 # LibStub and CallbackHandler-1.0 register first; both are version-guarded, so

@@ -1,10 +1,28 @@
-## Interface: 20501
-## Version: 0.0.1
+## Interface: 20506
 ## Title: RaapWhistle
-## Notes: Change the ground clutter when in need
+## Notes: Temporarily lowers ground clutter so you can spot ground-spawn quest objects, then restores it.
 ## Author: WilMartin
+## Version: 0.1.0
+## IconTexture: Interface\ICONS\Ability_hunter_beastcall
 ## SavedVariables: RaapWhistleDB
+## X-Category: Interface Enhancements
+## X-Website: https://github.com/GMaassen/RaapWhistle
 
+# Ace3 (embedded). Loaded before LibDBIcon's embeds.xml so that Ace3's copies of
+# LibStub and CallbackHandler-1.0 register first; both are version-guarded, so
+# LibDBIcon's identical copies then no-op instead of clobbering anything.
+Ace3\LibStub\LibStub.lua
+Ace3\CallbackHandler-1.0\CallbackHandler-1.0.xml
+Ace3\AceDB-3.0\AceDB-3.0.xml
+Ace3\AceDBOptions-3.0\AceDBOptions-3.0.xml
+Ace3\AceLocale-3.0\AceLocale-3.0.xml
+Ace3\AceConsole-3.0\AceConsole-3.0.xml
+Ace3\AceGUI-3.0\AceGUI-3.0.xml
+Ace3\AceConfig-3.0\AceConfig-3.0.xml
+
+# LibDataBroker + minimap button (embeds.xml pulls LibStub, CallbackHandler-1.0,
+# LibDataBroker-1.1)
 LibDBIcon-1.0\embeds.xml
 LibDBIcon-1.0\LibDBIcon-1.0\LibDBIcon-1.0.lua
+
 RaapWhistle.lua
