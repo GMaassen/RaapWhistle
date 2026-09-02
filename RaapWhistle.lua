@@ -31,6 +31,10 @@ local L = {
     ["Value for reduced ground clutter"] = "Value for reduced ground clutter",
     ["High Clutter Value"] = "High Clutter Value",
     ["Value for restored ground clutter"] = "Value for restored ground clutter",
+    ["Restore To"] = "Restore To",
+    ["What ground clutter is restored to"] = "What ground clutter is restored to",
+    ["Whatever it was before"] = "Whatever it was before",
+    ["The High Clutter Value"] = "The High Clutter Value",
     ["Quest Whitelist"] = "Quest Whitelist",
     ["Comma-separated quest IDs to auto-toggle"] = "Comma-separated quest IDs to auto-toggle",
     ["Profiles"] = "Profiles",
@@ -51,6 +55,11 @@ local function Print(msg)
     print("RaapWhistle: " .. tostring(msg))
 end
 
+-- GetTime is absent outside the game; 0 keeps the throttles harmlessly permissive.
+local function Now()
+    return (GetTime and GetTime()) or 0
+end
+
 -- CVar access -----------------------------------------------------------------
 
 local CLUTTER_CVAR = "graphicsGroundClutter"
@@ -64,6 +73,10 @@ local GetCVarDefaultValue = (C_CVar and C_CVar.GetCVarDefault) or GetCVarDefault
 -- maximum is unverified and may be lower than the 9 the sliders offer, so writes
 -- are clamped and the ceiling is corrected from whatever the client accepts.
 local clutterMax = 9
+
+-- Assigned once the options table exists, so a corrected ceiling can be pushed
+-- into the sliders instead of leaving them stale until the next /reload.
+local ClutterMaxChanged
 
 local function GetClutter()
     if not GetCVarValue then return nil end
@@ -103,6 +116,7 @@ local function SetClutter(value)
     local applied = GetClutter()
     if applied and applied < value then
         clutterMax = applied -- the client refused that level; remember the real ceiling
+        if ClutterMaxChanged then ClutterMaxChanged() end
     end
     return applied or value
 end
@@ -181,6 +195,11 @@ local defaults = {
     profile = {
         autoClutter = true,
         verbose = false,
+        -- "remembered" restores whatever the player was running at before the
+        -- addon lowered it; "fixed" restores clutterHigh. Restoring to a constant
+        -- silently raises the graphics of anyone not already on the client
+        -- default, so remembering is the default.
+        restoreMode = "remembered",
         clutterLow = CLUTTER_MIN,
         clutterHigh = GetClutterDefault() or clutterMax,
         questWhitelist = {},
@@ -203,6 +222,27 @@ end
 -- the real (persistent) store in InitDB.
 local db = { profile = CopyDefaults({}, defaults.profile) }
 local dbReady = false
+
+-- clutterLow must stay strictly below clutterHigh. If they meet, CurrentState()
+-- reports "low" for every value and the toggle stops being able to tell the two
+-- states apart. Called on load, where a hand-edited or older saved value could
+-- be anything.
+local function NormalizeClutterRange()
+    local profile = db.profile
+    local low = ClampClutter(profile.clutterLow) or CLUTTER_MIN
+    local high = ClampClutter(profile.clutterHigh) or clutterMax
+    if high <= low then
+        if low < clutterMax then
+            high = low + 1
+        else
+            low = math.max(CLUTTER_MIN, clutterMax - 1)
+            high = clutterMax
+        end
+    end
+    profile.clutterLow, profile.clutterHigh = low, high
+    profile.savedClutter = ClampClutter(profile.savedClutter)
+    if profile.restoreMode ~= "fixed" then profile.restoreMode = "remembered" end
+end
 
 -- Whitelist shape: profile.questWhitelist[questID] = { zones = { [uiMapID] = true } }
 -- An empty zones table means "no zone learned yet"; the current zone is recorded
@@ -244,10 +284,48 @@ local function AddToWhitelist(questID)
     return whitelist[questID]
 end
 
+-- A zone is only learned once the player is still there this many seconds later,
+-- so flying over a zone on the way somewhere else never gets it tracked.
+local ZONE_DWELL = 30
+local MAX_ZONES = 8
+
+-- questID -> { zone = uiMapID, since = timestamp }. Deliberately not persisted:
+-- a candidate that did not ripen before a reload was not worth keeping.
+local zoneCandidates = {}
+
+local function CountZones(entry)
+    local n = 0
+    for _ in pairs(entry.zones) do n = n + 1 end
+    return n
+end
+
+-- Explicit, user-initiated learning: /raapwhistle add means "track this quest
+-- here", so it skips the dwell filter.
 local function RememberZone(questID, zoneID)
     local entry = Whitelist()[questID]
     if not entry or not zoneID then return false end
     if entry.zones[zoneID] then return false end
+    if CountZones(entry) >= MAX_ZONES then return false end
+    entry.zones[zoneID] = true
+    zoneCandidates[questID] = nil
+    return true
+end
+
+-- Passive learning: records that questID was seen in zoneID, and promotes the
+-- zone only on a later sighting at least ZONE_DWELL apart. Returns true if the
+-- zone was learned, false while the candidate is still ripening.
+local function NoteZone(questID, zoneID, now)
+    local entry = Whitelist()[questID]
+    if not entry or not zoneID then return false end
+    if entry.zones[zoneID] then return true end
+    local candidate = zoneCandidates[questID]
+    if not candidate or candidate.zone ~= zoneID then
+        zoneCandidates[questID] = { zone = zoneID, since = now }
+        return false
+    end
+    if now - candidate.since < ZONE_DWELL then return false end
+    zoneCandidates[questID] = nil
+    if CountZones(entry) >= MAX_ZONES then return false end
     entry.zones[zoneID] = true
     return true
 end
@@ -266,6 +344,7 @@ local function InitDB()
         if ok and type(store) == "table" and type(store.profile) == "table" then
             db = store
             NormalizeWhitelist()
+            NormalizeClutterRange()
             return
         end
     end
@@ -282,6 +361,7 @@ local function InitDB()
     RaapWhistleDB.profiles[key] = CopyDefaults(RaapWhistleDB.profiles[key] or {}, defaults.profile)
     db = { profile = RaapWhistleDB.profiles[key] }
     NormalizeWhitelist()
+    NormalizeClutterRange()
 end
 
 -- Clutter state ---------------------------------------------------------------
@@ -298,9 +378,32 @@ local function CurrentState()
     return "high"
 end
 
+-- What "high" means. Restoring to a configured constant silently changes the
+-- graphics of anyone whose clutter was not already sitting on that value, so by
+-- default we hand back whatever was captured on the way down.
+local function RestoreTarget()
+    local profile = db.profile
+    if profile.restoreMode ~= "fixed" then
+        local saved = ClampClutter(profile.savedClutter)
+        if saved then return saved end
+    end
+    return ClampClutter(profile.clutterHigh) or GetClutterDefault() or clutterMax
+end
+
 local function ApplyState(state, announce)
     local profile = db.profile
-    local target = (state == "low") and profile.clutterLow or profile.clutterHigh
+    local target
+    if state == "low" then
+        -- Capture only when not already low, or lowering twice would remember
+        -- the low value as the thing to restore.
+        if CurrentState() ~= "low" then
+            local current = GetClutter()
+            if current then profile.savedClutter = current end
+        end
+        target = ClampClutter(profile.clutterLow) or CLUTTER_MIN
+    else
+        target = RestoreTarget()
+    end
     if SetClutter(target) == nil then
         -- always report a user-initiated failure, but only once for automatic ones
         if announce or not errorShown then
@@ -352,35 +455,57 @@ end
 
 -- Quest tracking --------------------------------------------------------------
 
+-- Returns true while at least one quest still has a zone candidate waiting out
+-- its dwell time, so the caller knows another look is needed.
 local function ScanQuestLog()
     local whitelist = Whitelist()
     local zoneID = GetCurrentZoneID()
+    local now = Now()
     local seen = {}
+    local ripening = false
     for i = 1, GetNumQuestEntries() do
         local questID = GetQuestIDForIndex(i)
         local entry = questID and whitelist[questID]
         if entry then
             seen[questID] = true
-            if zoneID and not next(entry.zones) then
-                entry.zones[zoneID] = true -- learn a zone for a quest that has none yet
+            if zoneID and not NoteZone(questID, zoneID, now) then
+                ripening = true
             end
         end
     end
+    for questID in pairs(zoneCandidates) do
+        if not seen[questID] then zoneCandidates[questID] = nil end
+    end
     activeQuests = seen
+    return ripening
 end
 
 local lastScan = 0
 local scanPending = false
+local dwellPending = false
+local DoScan -- forward declaration: ScheduleDwellCheck calls back into it
 
-local function DoScan()
-    lastScan = (GetTime and GetTime()) or 0
-    ScanQuestLog()
+-- A candidate ripens with nothing but the passage of time, and quest events may
+-- never fire again while the player simply stands there, so look again later.
+local function ScheduleDwellCheck()
+    if dwellPending or not (C_Timer and C_Timer.After) then return end
+    dwellPending = true
+    C_Timer.After(ZONE_DWELL + 1, function()
+        dwellPending = false
+        DoScan()
+    end)
+end
+
+function DoScan()
+    lastScan = Now()
+    local ripening = ScanQuestLog()
     UpdateAutoClutter()
+    if ripening then ScheduleDwellCheck() end
 end
 
 -- QUEST_LOG_UPDATE / UNIT_QUEST_LOG_CHANGED fire in bursts, so throttle them.
 local function RequestScan()
-    local now = (GetTime and GetTime()) or 0
+    local now = Now()
     if now - lastScan >= 1 then
         DoScan()
     elseif not scanPending and C_Timer and C_Timer.After then
@@ -490,7 +615,18 @@ local function RegisterOptions()
                 desc = L["Value for reduced ground clutter"],
                 min = CLUTTER_MIN, max = clutterMax, step = 1,
                 get = function() return db.profile.clutterLow end,
-                set = function(_, val) db.profile.clutterLow = ClampClutter(val) or CLUTTER_MIN end,
+                set = function(_, val)
+                    local profile = db.profile
+                    local low = ClampClutter(val) or CLUTTER_MIN
+                    if low >= profile.clutterHigh then
+                        -- push high out of the way rather than refusing the edit
+                        profile.clutterHigh = math.min(clutterMax, low + 1)
+                        if profile.clutterHigh <= low then
+                            low = math.max(CLUTTER_MIN, profile.clutterHigh - 1)
+                        end
+                    end
+                    profile.clutterLow = low
+                end,
             },
             clutterHigh = {
                 order = 40,
@@ -499,7 +635,34 @@ local function RegisterOptions()
                 desc = L["Value for restored ground clutter"],
                 min = CLUTTER_MIN, max = clutterMax, step = 1,
                 get = function() return db.profile.clutterHigh end,
-                set = function(_, val) db.profile.clutterHigh = ClampClutter(val) or clutterMax end,
+                set = function(_, val)
+                    local profile = db.profile
+                    local high = ClampClutter(val) or clutterMax
+                    if high <= profile.clutterLow then
+                        profile.clutterLow = math.max(CLUTTER_MIN, high - 1)
+                        if profile.clutterLow >= high then
+                            high = math.min(clutterMax, profile.clutterLow + 1)
+                        end
+                    end
+                    profile.clutterHigh = high
+                end,
+                disabled = function() return db.profile.restoreMode ~= "fixed" end,
+            },
+            restoreMode = {
+                order = 45,
+                type = "select",
+                name = L["Restore To"],
+                desc = L["What ground clutter is restored to"],
+                values = function()
+                    return {
+                        remembered = L["Whatever it was before"],
+                        fixed = L["The High Clutter Value"],
+                    }
+                end,
+                get = function() return db.profile.restoreMode end,
+                set = function(_, val)
+                    db.profile.restoreMode = (val == "fixed") and "fixed" or "remembered"
+                end,
             },
             questWhitelist = {
                 order = 50,
@@ -535,6 +698,19 @@ local function RegisterOptions()
         if ok and type(profileOptions) == "table" then
             profileOptions.order = 90
             options.args.profiles = profileOptions
+        end
+    end
+
+    -- AceConfigRegistry types min/max as plain numbers, so the sliders cannot
+    -- read the ceiling through a function. It keeps our table by reference and
+    -- re-reads it whenever the dialog opens, so update it in place instead.
+    ClutterMaxChanged = function()
+        options.args.clutterLow.max = clutterMax
+        options.args.clutterHigh.max = clutterMax
+        NormalizeClutterRange()
+        local registry = GetLib("AceConfigRegistry-3.0")
+        if registry and registry.NotifyChange then
+            pcall(registry.NotifyChange, registry, ADDON_NAME)
         end
     end
 
@@ -588,6 +764,29 @@ local function SlashList()
     end
 end
 
+-- A wrongly learned zone is otherwise unfixable without wiping the whole entry.
+local function SlashZones(arg)
+    local id, sub = tostring(arg or ""):match("^%s*(%d*)%s*(%S*)")
+    local questID = tonumber(id)
+    local entry = questID and Whitelist()[questID]
+    if not entry then
+        Print("Usage: /raapwhistle zones <questID> [clear]")
+        return
+    end
+    if string.lower(sub or "") == "clear" then
+        entry.zones = {}
+        zoneCandidates[questID] = nil
+        Print("Cleared learned zones for quest ID " .. questID .. ".")
+        UpdateAutoClutter()
+        return
+    end
+    local zones = {}
+    for zoneID in pairs(entry.zones) do zones[#zones + 1] = tostring(zoneID) end
+    table.sort(zones)
+    Print(string.format("Quest %d zones: %s", questID,
+        #zones > 0 and table.concat(zones, ", ") or "none yet"))
+end
+
 SLASH_RAAPWHISTLE1 = "/raapwhistle"
 SlashCmdList["RAAPWHISTLE"] = function(msg)
     local cmd, arg = tostring(msg or ""):match("^%s*(%S*)%s*(.-)%s*$")
@@ -610,8 +809,11 @@ SlashCmdList["RAAPWHISTLE"] = function(msg)
         end
     elseif cmd == "list" then
         SlashList()
+    elseif cmd == "zones" then
+        SlashZones(arg)
     else
-        Print("Usage: /raapwhistle [add [quest log index] | remove <questID> | list | toggle]")
+        Print("Usage: /raapwhistle [add [quest log index] | remove <questID> | "
+            .. "zones <questID> [clear] | list | toggle]")
     end
 end
 
@@ -630,6 +832,7 @@ local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+eventFrame:RegisterEvent("PLAYER_LOGOUT")
 eventFrame:RegisterEvent("ZONE_CHANGED")
 eventFrame:RegisterEvent("ZONE_CHANGED_INDOORS")
 eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
@@ -654,6 +857,13 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2)
         return
     end
 
+    if event == "PLAYER_LOGOUT" then
+        -- Never leave the CVar low on the way out: it persists in the client
+        -- config, so it would degrade every character, addon uninstalled or not.
+        if appliedState == "low" then ApplyState("high", false) end
+        return
+    end
+
     InitDB() -- safety net: saved variables are loaded by the time these fire
 
     if event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
@@ -671,6 +881,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2)
         RequestScan()
     else -- zone changes
         UpdateAutoClutter()
+        RequestScan() -- open or ripen a zone candidate for the quests in the log
         if event == "ZONE_CHANGED_NEW_AREA" and C_Timer and C_Timer.After then
             C_Timer.After(1, UpdateAutoClutter) -- the map ID can lag the event
         end
