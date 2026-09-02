@@ -11,8 +11,9 @@ M.ROOT = "."
 
 -- Globals the addon creates; cleared between runs so each load starts clean.
 local ADDON_GLOBALS = {
-    "RaapWhistle_ToggleBinding", "BINDING_HEADER_RAAPWHISTLE",
-    "BINDING_NAME_RAAPWHISTLE_TOGGLE", "SLASH_RAAPWHISTLE1",
+    "RaapWhistle_ToggleBinding", "RaapWhistle_PeekBinding",
+    "BINDING_HEADER_RAAPWHISTLE", "BINDING_NAME_RAAPWHISTLE_TOGGLE",
+    "BINDING_NAME_RAAPWHISTLE_PEEK", "SLASH_RAAPWHISTLE1",
 }
 
 function M.new(opts)
@@ -22,6 +23,10 @@ function M.new(opts)
         prints = {},
         timers = {},
         questLog = {},          -- array of questIDs, in log order
+        -- questID -> array of objective type strings ("object", "item",
+        -- "monster", ...). A quest absent from here has no objective data
+        -- available yet, which is what a client looks like right after login.
+        objectives = {},
         zone = 100,
         -- The player's own setting, which need not be the client default. Kept
         -- distinct from cvarDefault so restore-to-remembered can be told apart
@@ -71,6 +76,11 @@ function M.new(opts)
     function _G.UnitName() return "Tester" end
     function _G.GetRealmName() return "TestRealm" end
     function _G.GetLocale() return "enUS" end
+    function _G.GetAddOnMetadata(_, field)
+        return field == "Version" and "0.2.0" or nil
+    end
+    -- version, build, date, interface number
+    function _G.GetBuildInfo() return "12.0.0", "60000", "Jan 1 2026", 120000 end
     -- AceDB-3.0 reads these to build its profile keys.
     function _G.UnitClass() return "Warrior", "WARRIOR" end
     function _G.UnitRace() return "Orc", "Orc" end
@@ -86,8 +96,10 @@ function M.new(opts)
     _G.Settings = nil
     _G.InterfaceOptionsFrame_OpenToCategory = function() end
 
-    _G.C_Map = (not opts.noMap) and
-        { GetBestMapForUnit = function() return env.zone end } or nil
+    _G.C_Map = (not opts.noMap) and {
+        GetBestMapForUnit = function() return env.zone end,
+        GetMapInfo = function(mapID) return { mapID = mapID, name = "Zone " .. mapID } end,
+    } or nil
 
     if opts.noTimer then
         _G.C_Timer = nil
@@ -101,6 +113,8 @@ function M.new(opts)
         _G.GetQuestLogTitle = nil
         _G.GetQuestLogSelection = nil
         _G.GetNumQuestLogEntries = nil
+        _G.GetNumQuestLeaderBoards = nil
+        _G.GetQuestLogLeaderBoard = nil
         _G.C_QuestLog = {
             GetNumQuestLogEntries = function() return #env.questLog end,
             GetInfo = function(i)
@@ -109,6 +123,15 @@ function M.new(opts)
                 return { questID = q, isHeader = false, title = "Quest " .. q }
             end,
             GetSelectedQuest = function() return env.selected end,
+            GetQuestObjectives = function(questID)
+                local list = env.objectives[questID]
+                if not list then return nil end
+                local out = {}
+                for i, objectiveType in ipairs(list) do
+                    out[i] = { type = objectiveType, finished = false }
+                end
+                return out
+            end,
             IsOnQuest = function(id)
                 for _, q in ipairs(env.questLog) do if q == id then return true end end
                 return false
@@ -125,6 +148,17 @@ function M.new(opts)
             return "Quest " .. q, 70, 0, false, false, false, 1, q
         end
         _G.GetQuestLogSelection = function() return env.selectedIndex or 0 end
+        _G.GetNumQuestLeaderBoards = function(index)
+            local list = env.objectives[env.questLog[index]]
+            return list and #list or 0
+        end
+        _G.GetQuestLogLeaderBoard = function(objective, index)
+            local list = env.objectives[env.questLog[index]]
+            local objectiveType = list and list[objective]
+            if not objectiveType then return nil end
+            -- description, type, finished
+            return "Objective " .. objective, objectiveType, false
+        end
     end
 
     if opts.ace then
@@ -142,9 +176,14 @@ function M.new(opts)
         return self
     end
 
+    -- The addon may create other frames (the peek ticker), so find the one
+    -- actually listening for events rather than assuming it was created last.
     function env:fire(...)
-        local f = self.frames[#self.frames]
-        return f.scripts.OnEvent(f, ...)
+        for i = #self.frames, 1, -1 do
+            local f = self.frames[i]
+            if f.scripts.OnEvent then return f.scripts.OnEvent(f, ...) end
+        end
+        error("no frame is handling events")
     end
 
     function env:slash(msg) _G.SlashCmdList["RAAPWHISTLE"](msg) end
@@ -157,6 +196,17 @@ function M.new(opts)
         local pending = self.timers
         self.timers = {}
         for _, t in ipairs(pending) do t.fn() end
+    end
+
+    -- Advances the clock and runs OnUpdate handlers, for the code paths that
+    -- fall back to a ticker when C_Timer is unavailable.
+    function env:tick(seconds)
+        seconds = seconds or 1
+        self.now = self.now + seconds
+        for _, f in ipairs(self.frames) do
+            local fn = f.scripts.OnUpdate
+            if fn then fn(f, seconds) end
+        end
     end
 
     function env:clearPrints() self.prints = {} end

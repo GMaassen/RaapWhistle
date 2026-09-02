@@ -2,7 +2,7 @@
 ## Title: RaapWhistle
 ## Notes: Temporarily lowers ground clutter so you can spot ground-spawn quest objects, then restores it.
 ## Author: WilMartin
-## Version: 0.1.0
+## Version: 0.2.0
 ## IconTexture: Interface\ICONS\Ability_hunter_beastcall
 ## SavedVariables: RaapWhistleDB
 ## X-Category: Interface Enhancements

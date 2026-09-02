@@ -1,0 +1,13 @@
+package-as: RaapWhistle
+
+# Ace3 and LibDBIcon are vendored in the repo rather than pulled as externals.
+# tests/check_toc.lua asserts every file a .toc lists exists on disk, and the
+# AceDB test loads the vendored copy directly, so both would break if the
+# packager fetched them at build time instead. Revisit if this ever goes public.
+
+enable-nolib-creation: no
+
+ignore:
+  - .github
+  - .gitattributes
+  - tests

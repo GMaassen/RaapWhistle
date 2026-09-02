@@ -35,10 +35,19 @@ local L = {
     ["What ground clutter is restored to"] = "What ground clutter is restored to",
     ["Whatever it was before"] = "Whatever it was before",
     ["The High Clutter Value"] = "The High Clutter Value",
+    ["Detect Search Quests"] = "Detect Search Quests",
+    ["Track quests with an objective you have to click on the ground"] = "Track quests with an objective you have to click on the ground",
+    ["Also Detect Collection Quests"] = "Also Detect Collection Quests",
+    ["Much broader: matches every quest that counts items, including drops from kills"] = "Much broader: matches every quest that counts items, including drops from kills",
     ["Quest Whitelist"] = "Quest Whitelist",
     ["Comma-separated quest IDs to auto-toggle"] = "Comma-separated quest IDs to auto-toggle",
     ["Profiles"] = "Profiles",
     ["Toggle Ground Clutter"] = "Toggle Ground Clutter",
+    ["Peek Ground Clutter"] = "Peek Ground Clutter",
+    ["Peek Duration"] = "Peek Duration",
+    ["How long a peek lasts, in seconds"] = "How long a peek lasts, in seconds",
+    ["Ground clutter lowered for %d seconds."] = "Ground clutter lowered for %d seconds.",
+    ["Peek ended, ground clutter restored."] = "Peek ended, ground clutter restored.",
 }
 
 do
@@ -162,6 +171,17 @@ local function GetQuestIDForIndex(index)
     return nil
 end
 
+local function GetQuestTitle(index)
+    if C_QuestLog and C_QuestLog.GetInfo then
+        local info = C_QuestLog.GetInfo(index)
+        return info and info.title
+    end
+    if GetQuestLogTitle then
+        return (GetQuestLogTitle(index))
+    end
+    return nil
+end
+
 local function GetSelectedQuestID()
     if C_QuestLog and C_QuestLog.GetSelectedQuest then
         local questID = C_QuestLog.GetSelectedQuest()
@@ -189,20 +209,65 @@ local function IsQuestInLog(questID)
     return false
 end
 
+-- Quest objectives are typed, and one of the types is exactly what this addon
+-- exists for: "object" means a world object you click, which is the buried crate
+-- or half-hidden clicky the grass is hiding.
+local function GetObjectiveTypes(index, questID)
+    if C_QuestLog and C_QuestLog.GetQuestObjectives then
+        local ok, objectives = pcall(C_QuestLog.GetQuestObjectives, questID)
+        if not ok or type(objectives) ~= "table" or #objectives == 0 then return nil end
+        local types = {}
+        for _, objective in ipairs(objectives) do
+            if type(objective) == "table" and objective.type then
+                types[objective.type] = true
+            end
+        end
+        return next(types) and types or nil
+    end
+    -- Classic keys objectives off the quest log index. Passing the index as the
+    -- second argument avoids SelectQuestLogEntry, which would move the player's
+    -- own quest log selection out from under them.
+    if GetNumQuestLeaderBoards and GetQuestLogLeaderBoard then
+        local ok, count = pcall(GetNumQuestLeaderBoards, index)
+        if not ok or not count or count < 1 then return nil end
+        local types = {}
+        for i = 1, count do
+            local read, _, objectiveType = pcall(GetQuestLogLeaderBoard, i, index)
+            if read and objectiveType then types[objectiveType] = true end
+        end
+        return next(types) and types or nil
+    end
+    return nil
+end
+
+-- Cached per quest, because scanning every objective of a full quest log on every
+-- QUEST_LOG_UPDATE burst is wasteful. Only definitive answers are stored: quest
+-- data is not always available straight after login, and a nil there has to be
+-- retried rather than remembered as a no.
+local objectiveTypeCache = {}
+
 -- Saved variables -------------------------------------------------------------
 
 local defaults = {
     profile = {
         autoClutter = true,
+        -- Detection defaults to "object" objectives only. Ground spawns that count
+        -- items report as "item", which would also match every "collect 8 murloc
+        -- fins" kill-quest and dim the grass nearly everywhere, defeating the
+        -- point - so the broader match is opt-in.
+        autoDetect = true,
+        detectItemObjectives = false,
         verbose = false,
         -- "remembered" restores whatever the player was running at before the
         -- addon lowered it; "fixed" restores clutterHigh. Restoring to a constant
         -- silently raises the graphics of anyone not already on the client
         -- default, so remembering is the default.
         restoreMode = "remembered",
+        peekDuration = 20,
         clutterLow = CLUTTER_MIN,
         clutterHigh = GetClutterDefault() or clutterMax,
         questWhitelist = {},
+        questIgnore = {},
         minimap = { hide = false },
     },
 }
@@ -244,13 +309,22 @@ local function NormalizeClutterRange()
     if profile.restoreMode ~= "fixed" then profile.restoreMode = "remembered" end
 end
 
--- Whitelist shape: profile.questWhitelist[questID] = { zones = { [uiMapID] = true } }
+-- Whitelist shape:
+--   profile.questWhitelist[questID] = { zones = { [uiMapID] = true }, auto = true? }
+-- auto marks an entry the addon added by itself; manual entries are never
+-- touched by detection and survive it being switched off.
 -- An empty zones table means "no zone learned yet"; the current zone is recorded
 -- the first time the quest is accepted or seen in the quest log.
 local function Whitelist()
     local profile = db.profile
     profile.questWhitelist = profile.questWhitelist or {}
     return profile.questWhitelist
+end
+
+local function Ignored()
+    local profile = db.profile
+    profile.questIgnore = profile.questIgnore or {}
+    return profile.questIgnore
 end
 
 -- Rebuilds the whitelist into the shape above, converting the older
@@ -270,10 +344,33 @@ local function NormalizeWhitelist()
             elseif type(entry) == "number" then
                 zones[entry] = true
             end
-            new[id] = { zones = zones }
+            new[id] = {
+                zones = zones,
+                auto = (type(entry) == "table" and entry.auto) or nil,
+            }
         end
     end
     db.profile.questWhitelist = new
+
+    local ignore = {}
+    for questID in pairs(Ignored()) do
+        local id = tonumber(questID)
+        if id then ignore[id] = true end
+    end
+    db.profile.questIgnore = ignore
+end
+
+-- true / false / nil, where nil means "cannot tell yet, ask again".
+local function QuestHasGroundObjective(index, questID)
+    local types = objectiveTypeCache[questID]
+    if not types then
+        types = GetObjectiveTypes(index, questID)
+        if not types then return nil end
+        objectiveTypeCache[questID] = types
+    end
+    if types["object"] then return true end
+    if db.profile.detectItemObjectives and types["item"] then return true end
+    return false
 end
 
 local function AddToWhitelist(questID)
@@ -370,6 +467,14 @@ local activeQuests = {} -- questID -> true for whitelisted quests currently in t
 local appliedState      -- "low" / "high": last state this addon applied
 local errorShown = false
 
+-- Timestamp a running peek expires at, nil when no peek is running. Declared up
+-- here because the automatic logic has to know to keep its hands off.
+local peekUntil
+
+local function PeekActive()
+    return peekUntil ~= nil
+end
+
 local function CurrentState()
     local current = GetClutter()
     if not current then return appliedState end
@@ -422,6 +527,7 @@ end
 
 -- User initiated: always allowed, always announced, ignores autoClutter.
 local function ToggleGroundClutter()
+    peekUntil = nil -- an explicit toggle takes over from any running peek
     ApplyState(CurrentState() == "low" and "high" or "low", true)
 end
 
@@ -442,6 +548,7 @@ end
 local function UpdateAutoClutter()
     local profile = db.profile
     if not profile.autoClutter then return end
+    if PeekActive() then return end -- a peek is explicit; do not fight it
     local desired = DesiredAutoState()
     if desired == CurrentState() then
         appliedState = desired -- already in the desired state; stay quiet
@@ -451,6 +558,82 @@ local function UpdateAutoClutter()
         Print(desired == "low" and L["Quest objective started, ground clutter reduced."]
             or L["Quest objective complete, ground clutter restored."])
     end
+end
+
+-- Peek ------------------------------------------------------------------------
+-- The actual use case is "let me see for twenty seconds", not a sticky toggle,
+-- and a peek that restores itself cannot leave the client stuck on low grass.
+
+local PEEK_MIN, PEEK_MAX = 1, 600
+
+local SchedulePeekExpiry, CheckPeek -- mutually recursive; see below
+local peekFrame
+
+local function EndPeek()
+    if not peekUntil then return end
+    peekUntil = nil
+    -- Walking into a tracked quest zone mid-peek means low is now the correct
+    -- state on its own merits, so end the peek without raising clutter again.
+    if db.profile.autoClutter and DesiredAutoState() == "low" then
+        appliedState = "low"
+        return
+    end
+    if ApplyState("high", false) then
+        Print(L["Peek ended, ground clutter restored."])
+    end
+end
+
+-- No C_Timer on the oldest clients, so drive the expiry from OnUpdate instead.
+-- Created on demand: every client that has C_Timer never needs this frame.
+local function StartPeekTicker()
+    if not peekFrame then
+        if not CreateFrame then return end
+        peekFrame = CreateFrame("Frame")
+    end
+    peekFrame:SetScript("OnUpdate", function(self)
+        if not peekUntil then
+            self:SetScript("OnUpdate", nil)
+            return
+        end
+        if Now() >= peekUntil then
+            self:SetScript("OnUpdate", nil)
+            EndPeek()
+        end
+    end)
+end
+
+function SchedulePeekExpiry()
+    if not peekUntil then return end
+    if C_Timer and C_Timer.After then
+        C_Timer.After(math.max(0.1, peekUntil - Now()), CheckPeek)
+        return
+    end
+    StartPeekTicker()
+end
+
+-- A peek that was extended leaves an early timer behind, so re-check the clock
+-- rather than trusting the timer to mean the peek is over.
+function CheckPeek()
+    if not peekUntil then return end
+    if Now() >= peekUntil then
+        EndPeek()
+    else
+        SchedulePeekExpiry()
+    end
+end
+
+local function StartPeek(seconds)
+    local profile = db.profile
+    seconds = tonumber(seconds) or tonumber(profile.peekDuration) or 20
+    seconds = math.floor(seconds)
+    if seconds < PEEK_MIN then seconds = PEEK_MIN end
+    if seconds > PEEK_MAX then seconds = PEEK_MAX end
+
+    -- Do not start the clock until the CVar write has actually landed.
+    if not PeekActive() and not ApplyState("low", false) then return end
+    peekUntil = Now() + seconds
+    Print(string.format(L["Ground clutter lowered for %d seconds."], seconds))
+    SchedulePeekExpiry()
 end
 
 -- Quest tracking --------------------------------------------------------------
@@ -463,10 +646,24 @@ local function ScanQuestLog()
     local now = Now()
     local seen = {}
     local ripening = false
+    local profile = db.profile
+    local ignore = Ignored()
     for i = 1, GetNumQuestEntries() do
         local questID = GetQuestIDForIndex(i)
         local entry = questID and whitelist[questID]
-        if entry then
+        if questID and not entry and profile.autoDetect and not ignore[questID] then
+            if QuestHasGroundObjective(i, questID) then
+                entry = AddToWhitelist(questID)
+                entry.auto = true
+                if profile.verbose then
+                    Print(string.format("Tracking quest %d - it has a search objective.",
+                        questID))
+                end
+            end
+        end
+        -- An auto entry stands down while detection is off, but is kept: its
+        -- learned zones are worth having if detection is switched back on.
+        if entry and not (entry.auto and not profile.autoDetect) then
             seen[questID] = true
             if zoneID and not NoteZone(questID, zoneID, now) then
                 ripening = true
@@ -569,7 +766,10 @@ local function OpenOptions()
     end
     if Settings and Settings.OpenToCategory then
         local category = optionsFrame.categoryID or optionsFrame.name or ADDON_NAME
-        if pcall(Settings.OpenToCategory, category) then return end
+        -- OpenToCategory returns false for an unknown category rather than
+        -- erroring, so pcall succeeding is not the same as the panel opening.
+        local ok, opened = pcall(Settings.OpenToCategory, category)
+        if ok and opened ~= false then return end
     end
     if InterfaceOptionsFrame_OpenToCategory then
         -- Blizzard bug: the first call only expands the category list.
@@ -600,6 +800,31 @@ local function RegisterOptions()
                     if val then UpdateAutoClutter() end
                 end,
             },
+            autoDetect = {
+                order = 15,
+                type = "toggle",
+                name = L["Detect Search Quests"],
+                desc = L["Track quests with an objective you have to click on the ground"],
+                get = function() return db.profile.autoDetect end,
+                set = function(_, val)
+                    db.profile.autoDetect = val
+                    ScanQuestLog()
+                    UpdateAutoClutter()
+                end,
+            },
+            detectItemObjectives = {
+                order = 17,
+                type = "toggle",
+                name = L["Also Detect Collection Quests"],
+                desc = L["Much broader: matches every quest that counts items, including drops from kills"],
+                disabled = function() return not db.profile.autoDetect end,
+                get = function() return db.profile.detectItemObjectives end,
+                set = function(_, val)
+                    db.profile.detectItemObjectives = val
+                    ScanQuestLog()
+                    UpdateAutoClutter()
+                end,
+            },
             verbose = {
                 order = 20,
                 type = "toggle",
@@ -607,6 +832,20 @@ local function RegisterOptions()
                 desc = L["Announce automatic ground clutter changes in chat"],
                 get = function() return db.profile.verbose end,
                 set = function(_, val) db.profile.verbose = val end,
+            },
+            peekDuration = {
+                order = 25,
+                type = "range",
+                name = L["Peek Duration"],
+                desc = L["How long a peek lasts, in seconds"],
+                min = PEEK_MIN, max = 120, step = 1,
+                get = function() return db.profile.peekDuration end,
+                set = function(_, val)
+                    local seconds = math.floor(tonumber(val) or 20)
+                    if seconds < PEEK_MIN then seconds = PEEK_MIN end
+                    if seconds > PEEK_MAX then seconds = PEEK_MAX end
+                    db.profile.peekDuration = seconds
+                end,
             },
             clutterLow = {
                 order = 30,
@@ -736,7 +975,8 @@ local function SlashAdd(arg)
         Print("Could not determine a quest ID. Select a quest in the quest log or pass its index.")
         return
     end
-    AddToWhitelist(questID)
+    Ignored()[questID] = nil -- adding it by hand overrides an earlier ignore
+    AddToWhitelist(questID).auto = nil
     if IsQuestInLog(questID) then
         RememberZone(questID, GetCurrentZoneID())
     end
@@ -758,7 +998,8 @@ local function SlashList()
         local zones = {}
         for zoneID in pairs(whitelist[questID].zones) do zones[#zones + 1] = tostring(zoneID) end
         table.sort(zones)
-        Print(string.format("%d - zones: %s%s", questID,
+        Print(string.format("%d%s - zones: %s%s", questID,
+            whitelist[questID].auto and " (auto)" or "",
             #zones > 0 and table.concat(zones, ", ") or "none yet",
             activeQuests[questID] and " (in quest log)" or ""))
     end
@@ -787,6 +1028,105 @@ local function SlashZones(arg)
         #zones > 0 and table.concat(zones, ", ") or "none yet"))
 end
 
+-- One shot dump of everything worth knowing when this misbehaves in game, so a
+-- report is a single paste rather than a dozen /dump commands. Everything here
+-- is defensive: the whole point is that it still prints on a client where the
+-- thing being diagnosed is exactly what is missing.
+local function SlashDebug()
+    local metadata = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
+    local version = "?"
+    if metadata then
+        local ok, value = pcall(metadata, ADDON_NAME, "Version")
+        if ok and value then version = tostring(value) end
+    end
+    local build, interface = "?", "?"
+    if GetBuildInfo then
+        local ok, clientVersion, _, _, tocVersion = pcall(GetBuildInfo)
+        if ok then build, interface = tostring(clientVersion), tostring(tocVersion) end
+    end
+    Print(string.format("%s %s | client %s (interface %s)", ADDON_NAME, version, build, interface))
+
+    local current, default = GetClutter(), GetClutterDefault()
+    if current == nil and default == nil then
+        Print(string.format("CVar %s: MISSING - this client does not expose it", CLUTTER_CVAR))
+    else
+        Print(string.format("CVar %s = %s (default %s, ceiling %d)", CLUTTER_CVAR,
+            tostring(current), tostring(default), clutterMax))
+    end
+
+    if not LibStub then
+        Print("libs: none - LibStub did not load, running on the fallback paths")
+    else
+        local loaded = {}
+        for _, name in ipairs({ "AceDB-3.0", "AceDBOptions-3.0", "AceLocale-3.0",
+            "AceConfig-3.0", "AceConfigDialog-3.0", "AceConfigRegistry-3.0",
+            "LibDataBroker-1.1", "LibDBIcon-1.0" }) do
+            if GetLib(name) then loaded[#loaded + 1] = name end
+        end
+        Print("libs: " .. table.concat(loaded, " "))
+    end
+
+    local zoneID = GetCurrentZoneID()
+    local zoneName
+    if zoneID and C_Map and C_Map.GetMapInfo then
+        local ok, info = pcall(C_Map.GetMapInfo, zoneID)
+        if ok and type(info) == "table" then zoneName = info.name end
+    end
+    Print(string.format("map: %s%s", tostring(zoneID),
+        zoneName and (" (" .. tostring(zoneName) .. ")") or ""))
+
+    local profile = db.profile
+    Print(string.format("settings: auto=%s detect=%s item=%s restore=%s low=%s high=%s peek=%ss",
+        tostring(profile.autoClutter), tostring(profile.autoDetect),
+        tostring(profile.detectItemObjectives), tostring(profile.restoreMode),
+        tostring(profile.clutterLow), tostring(profile.clutterHigh),
+        tostring(profile.peekDuration)))
+    Print(string.format("state: applied=%s reads-as=%s peek=%s saved=%s",
+        tostring(appliedState), tostring(CurrentState()),
+        PeekActive() and "running" or "no", tostring(profile.savedClutter)))
+
+    local count = GetNumQuestEntries()
+    Print(string.format("quest log (%d entries):", count))
+    for i = 1, count do
+        local questID = GetQuestIDForIndex(i)
+        if questID then
+            local types = GetObjectiveTypes(i, questID)
+            local list = {}
+            if types then
+                for objectiveType in pairs(types) do list[#list + 1] = tostring(objectiveType) end
+                table.sort(list)
+            end
+            local verdict = QuestHasGroundObjective(i, questID)
+            Print(string.format("  %d %s | obj: %s | detect: %s", questID,
+                tostring(GetQuestTitle(i) or "?"),
+                #list > 0 and table.concat(list, ",") or "unavailable",
+                verdict == nil and "unknown" or (verdict and "YES" or "no")))
+        end
+    end
+
+    local whitelist = Whitelist()
+    local ids = {}
+    for questID in pairs(whitelist) do ids[#ids + 1] = questID end
+    table.sort(ids)
+    Print(string.format("whitelist: %s", #ids == 0 and "empty"
+        or (#ids .. (#ids == 1 and " entry" or " entries"))))
+    for _, questID in ipairs(ids) do
+        local zones = {}
+        for zoneEntry in pairs(whitelist[questID].zones) do
+            zones[#zones + 1] = tostring(zoneEntry)
+        end
+        table.sort(zones)
+        Print(string.format("  %d%s zones: %s", questID,
+            whitelist[questID].auto and " (auto)" or "",
+            #zones > 0 and table.concat(zones, ", ") or "none yet"))
+    end
+
+    local ignored = {}
+    for questID in pairs(Ignored()) do ignored[#ignored + 1] = tostring(questID) end
+    table.sort(ignored)
+    Print("ignored: " .. (#ignored > 0 and table.concat(ignored, ", ") or "none"))
+end
+
 SLASH_RAAPWHISTLE1 = "/raapwhistle"
 SlashCmdList["RAAPWHISTLE"] = function(msg)
     local cmd, arg = tostring(msg or ""):match("^%s*(%S*)%s*(.-)%s*$")
@@ -795,6 +1135,8 @@ SlashCmdList["RAAPWHISTLE"] = function(msg)
         OpenOptions()
     elseif cmd == "toggle" then
         ToggleGroundClutter()
+    elseif cmd == "peek" then
+        StartPeek(arg)
     elseif cmd == "add" then
         SlashAdd(arg)
     elseif cmd == "remove" or cmd == "del" then
@@ -807,13 +1149,37 @@ SlashCmdList["RAAPWHISTLE"] = function(msg)
         else
             Print("Usage: /raapwhistle remove <questID>")
         end
+    elseif cmd == "ignore" then
+        local questID = tonumber(arg)
+        if questID then
+            Ignored()[questID] = true
+            Whitelist()[questID] = nil
+            activeQuests[questID] = nil
+            Print("Ignoring quest ID " .. questID .. ".")
+            UpdateAutoClutter()
+        else
+            Print("Usage: /raapwhistle ignore <questID>")
+        end
+    elseif cmd == "unignore" then
+        local questID = tonumber(arg)
+        if questID and Ignored()[questID] then
+            Ignored()[questID] = nil
+            Print("No longer ignoring quest ID " .. questID .. ".")
+            ScanQuestLog()
+            UpdateAutoClutter()
+        else
+            Print("Usage: /raapwhistle unignore <questID>")
+        end
     elseif cmd == "list" then
         SlashList()
+    elseif cmd == "debug" then
+        SlashDebug()
     elseif cmd == "zones" then
         SlashZones(arg)
     else
         Print("Usage: /raapwhistle [add [quest log index] | remove <questID> | "
-            .. "zones <questID> [clear] | list | toggle]")
+            .. "ignore <questID> | unignore <questID> | zones <questID> [clear] | "
+            .. "list | toggle | peek [seconds] | debug]")
     end
 end
 
@@ -821,9 +1187,14 @@ end
 
 BINDING_HEADER_RAAPWHISTLE = L["RaapWhistle"]
 BINDING_NAME_RAAPWHISTLE_TOGGLE = L["Toggle Ground Clutter"]
+BINDING_NAME_RAAPWHISTLE_PEEK = L["Peek Ground Clutter"]
 
 function RaapWhistle_ToggleBinding()
     ToggleGroundClutter()
+end
+
+function RaapWhistle_PeekBinding()
+    StartPeek()
 end
 
 -- Events ----------------------------------------------------------------------

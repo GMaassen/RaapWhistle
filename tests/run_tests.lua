@@ -311,6 +311,201 @@ test("an inverted low/high pair is repaired on load", function()
     end
 end)
 
+-- Peek -----------------------------------------------------------------------
+
+test("peek lowers clutter and puts it back on its own", function()
+    local e = boot({ api = "classic", cvarStart = 7 })
+    if type(_G.RaapWhistle_PeekBinding) ~= "function" then
+        error("the peek keybinding global was never created")
+    end
+    e:slash("peek 10")
+    eq(e:clutter(), "0", "lowered for the peek")
+    e:flush(10)
+    eq(e:clutter(), "7", "restored when the peek expired")
+end)
+
+test("peek restores without C_Timer, through the OnUpdate fallback", function()
+    local e = boot({ api = "classic", cvarStart = 7, noTimer = true })
+    e:slash("peek 10")
+    eq(e:clutter(), "0", "lowered")
+    e:tick(4)
+    eq(e:clutter(), "0", "still peeking")
+    e:tick(6)
+    eq(e:clutter(), "7", "restored by the ticker")
+end)
+
+test("a second peek extends rather than stacking", function()
+    local e = boot({ api = "classic", cvarStart = 7 })
+    e:slash("peek 10")
+    e:flush(5)
+    e:slash("peek 10")           -- expires at 15 now, not 10
+    e:flush(6)                   -- clock at 11
+    eq(e:clutter(), "0", "extended peek still running")
+    e:flush(5)                   -- clock at 16
+    eq(e:clutter(), "7", "restored once the extension expired")
+end)
+
+test("the automatic toggle does not fight a running peek", function()
+    local e = boot({ api = "classic", cvarStart = 7 })
+    e.questLog = { 1234 }
+    e:slash("add 1")             -- tracked in zone 100
+    e.zone = 200
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    eq(e:clutter(), "7", "restored outside the tracked zone")
+    e:slash("peek 10")
+    eq(e:clutter(), "0", "peeking")
+    e:fire("ZONE_CHANGED")       -- the automatic logic would want high here
+    eq(e:clutter(), "0", "peek held")
+    e:flush(10)
+    eq(e:clutter(), "7", "and released afterwards")
+end)
+
+test("a peek ending inside a tracked zone stays low", function()
+    local e = boot({ api = "classic", cvarStart = 7 })
+    e.questLog = { 1234 }
+    e:slash("add 1")             -- zone 100 tracked
+    e.zone = 200
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    eq(e:clutter(), "7", "high outside the tracked zone")
+    e:slash("peek 10")
+    e.zone = 100                 -- walked back in mid-peek
+    e:flush(10)
+    eq(e:clutter(), "0", "stayed low, because the quest wants it low anyway")
+end)
+
+test("a manual toggle cancels a running peek", function()
+    local e = boot({ api = "classic", cvarStart = 7 })
+    e.questLog = { 1234 }
+    e:slash("add 1")             -- tracked in zone 100
+    e.zone = 200
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    eq(e:clutter(), "7", "high outside the tracked zone")
+    e:slash("peek 60")
+    eq(e:clutter(), "0", "peeking")
+    e:slash("toggle")
+    eq(e:clutter(), "7", "toggled back up")
+    -- Restoring the same value the peek would have restored proves nothing, so
+    -- check the thing a leftover peek would still be blocking: automatic control.
+    e.zone = 100
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    eq(e:clutter(), "0", "the automatic toggle is live again straight away")
+    e:flush(60)
+    eq(e:clutter(), "0", "and the abandoned peek does not disturb it later")
+end)
+
+-- Automatic detection --------------------------------------------------------
+-- "object" objectives are world objects you click: the buried crate, the pile of
+-- bones, "search the wreckage". Those are exactly what the grass hides.
+
+local function profileOf()
+    return RaapWhistleDB.profiles["Default"]
+end
+
+-- Detection happens on a scan, and the zone still has to ripen afterwards.
+local function settle(e)
+    e:fire("QUEST_LOG_UPDATE")
+    e:flush(1)
+    e:flush(31)
+end
+
+test("a quest with an object objective is tracked without being added", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e.objectives[1234] = { "object" }
+    settle(e)
+    eq(e:clutter(), "0", "detected and lowered")
+    eq(profileOf().questWhitelist[1234].auto, true, "marked as an auto entry")
+end)
+
+test("a collection objective is not detected by default", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e.objectives[1234] = { "item", "monster" }
+    settle(e)
+    eq(e:clutter(), "9", "left alone")
+    eq(profileOf().questWhitelist[1234], nil, "not whitelisted")
+end)
+
+test("collection objectives are detected once opted in", function()
+    local saved = {
+        profileKeys = { ["Tester - TestRealm"] = "Default" },
+        profiles = { Default = { detectItemObjectives = true } },
+    }
+    local e = boot({ api = "classic", savedVars = saved })
+    e.questLog = { 1234 }
+    e.objectives[1234] = { "item" }
+    settle(e)
+    eq(e:clutter(), "0", "detected with the broader setting on")
+end)
+
+test("an ignored quest is never auto-tracked", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e.objectives[1234] = { "object" }
+    e:slash("ignore 1234")
+    settle(e)
+    eq(e:clutter(), "9", "stayed out of the way")
+end)
+
+test("unknown objective data is retried, not remembered as a no", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }         -- objective data not available yet
+    e:fire("QUEST_LOG_UPDATE")
+    e:flush(1)
+    eq(profileOf().questWhitelist[1234], nil, "nothing to detect yet")
+    e.objectives[1234] = { "object" }  -- the data arrives
+    settle(e)
+    eq(e:clutter(), "0", "picked up once the data was there")
+end)
+
+test("detection off stands auto entries down without deleting them", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e.objectives[1234] = { "object" }
+    settle(e)
+    eq(e:clutter(), "0", "auto-tracked")
+    local profile = profileOf()
+    profile.autoDetect = false
+    e:fire("QUEST_LOG_UPDATE")
+    e:flush(2)
+    eq(e:clutter(), "9", "stood down with detection off")
+    if not profile.questWhitelist[1234] then
+        error("the auto entry was deleted rather than stood down")
+    end
+    eq(profile.questWhitelist[1234].zones[100], true, "and its learned zone survived")
+end)
+
+test("a manual entry is unaffected by detection being off", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e:slash("add 1")
+    profileOf().autoDetect = false
+    e:fire("QUEST_LOG_UPDATE")
+    e:flush(2)
+    eq(e:clutter(), "0", "manual entries still track")
+end)
+
+test("retail: detection works through C_QuestLog.GetQuestObjectives", function()
+    local e = boot({ api = "retail" })
+    e.questLog = { 4242 }
+    e.objectives[4242] = { "object" }
+    settle(e)
+    eq(e:clutter(), "0", "detected on the retail surface too")
+end)
+
+test("slash: ignore drops a tracked quest, unignore lets it come back", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e.objectives[1234] = { "object" }
+    settle(e)
+    eq(e:clutter(), "0", "auto-tracked")
+    e:slash("ignore 1234")
+    eq(e:clutter(), "9", "dropped on ignore")
+    e:slash("unignore 1234")
+    settle(e)
+    eq(e:clutter(), "0", "detected again after unignore")
+end)
+
 -- Zone learning --------------------------------------------------------------
 
 local function zonesOf(questID)
@@ -389,6 +584,31 @@ test("slash: zones lists and clears the learned zones", function()
     e:slash("zones 1234 clear")
     eq(next(zonesOf(1234)), nil, "zones cleared")
     eq(e:clutter(), "9", "clutter restored once no zone is tracked")
+end)
+
+-- A debug dump that errors is worse than no debug dump, and the client it has to
+-- survive is exactly the one where the thing being diagnosed is missing.
+test("slash: debug dumps state on both API surfaces", function()
+    for _, api in ipairs({ "classic", "retail" }) do
+        local e = boot({ api = api })
+        e.questLog = { 1234 }
+        e.objectives[1234] = { "object" }
+        e:slash("add 1")
+        e:clearPrints()
+        e:slash("debug")
+        if e:printCount() < 8 then
+            error(api .. ": debug printed only " .. e:printCount() .. " lines")
+        end
+    end
+end)
+
+test("slash: debug still works on a client missing everything", function()
+    local e = boot({ api = "classic", noMap = true, noTimer = true, cvarFail = true })
+    e:clearPrints()
+    e:slash("debug")            -- no LibStub, no C_Map, no C_Timer, CVar writes fail
+    if e:printCount() < 6 then
+        error("debug printed only " .. e:printCount() .. " lines")
+    end
 end)
 
 test("slash: list, remove and unknown subcommands behave", function()
