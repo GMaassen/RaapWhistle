@@ -23,6 +23,10 @@ function M.new(opts)
         prints = {},
         timers = {},
         questLog = {},          -- array of questIDs, in log order
+        -- questID -> array of objective type strings ("object", "item",
+        -- "monster", ...). A quest absent from here has no objective data
+        -- available yet, which is what a client looks like right after login.
+        objectives = {},
         zone = 100,
         -- The player's own setting, which need not be the client default. Kept
         -- distinct from cvarDefault so restore-to-remembered can be told apart
@@ -102,6 +106,8 @@ function M.new(opts)
         _G.GetQuestLogTitle = nil
         _G.GetQuestLogSelection = nil
         _G.GetNumQuestLogEntries = nil
+        _G.GetNumQuestLeaderBoards = nil
+        _G.GetQuestLogLeaderBoard = nil
         _G.C_QuestLog = {
             GetNumQuestLogEntries = function() return #env.questLog end,
             GetInfo = function(i)
@@ -110,6 +116,15 @@ function M.new(opts)
                 return { questID = q, isHeader = false, title = "Quest " .. q }
             end,
             GetSelectedQuest = function() return env.selected end,
+            GetQuestObjectives = function(questID)
+                local list = env.objectives[questID]
+                if not list then return nil end
+                local out = {}
+                for i, objectiveType in ipairs(list) do
+                    out[i] = { type = objectiveType, finished = false }
+                end
+                return out
+            end,
             IsOnQuest = function(id)
                 for _, q in ipairs(env.questLog) do if q == id then return true end end
                 return false
@@ -126,6 +141,17 @@ function M.new(opts)
             return "Quest " .. q, 70, 0, false, false, false, 1, q
         end
         _G.GetQuestLogSelection = function() return env.selectedIndex or 0 end
+        _G.GetNumQuestLeaderBoards = function(index)
+            local list = env.objectives[env.questLog[index]]
+            return list and #list or 0
+        end
+        _G.GetQuestLogLeaderBoard = function(objective, index)
+            local list = env.objectives[env.questLog[index]]
+            local objectiveType = list and list[objective]
+            if not objectiveType then return nil end
+            -- description, type, finished
+            return "Objective " .. objective, objectiveType, false
+        end
     end
 
     if opts.ace then

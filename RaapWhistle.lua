@@ -35,6 +35,10 @@ local L = {
     ["What ground clutter is restored to"] = "What ground clutter is restored to",
     ["Whatever it was before"] = "Whatever it was before",
     ["The High Clutter Value"] = "The High Clutter Value",
+    ["Detect Search Quests"] = "Detect Search Quests",
+    ["Track quests with an objective you have to click on the ground"] = "Track quests with an objective you have to click on the ground",
+    ["Also Detect Collection Quests"] = "Also Detect Collection Quests",
+    ["Much broader: matches every quest that counts items, including drops from kills"] = "Much broader: matches every quest that counts items, including drops from kills",
     ["Quest Whitelist"] = "Quest Whitelist",
     ["Comma-separated quest IDs to auto-toggle"] = "Comma-separated quest IDs to auto-toggle",
     ["Profiles"] = "Profiles",
@@ -194,11 +198,54 @@ local function IsQuestInLog(questID)
     return false
 end
 
+-- Quest objectives are typed, and one of the types is exactly what this addon
+-- exists for: "object" means a world object you click, which is the buried crate
+-- or half-hidden clicky the grass is hiding.
+local function GetObjectiveTypes(index, questID)
+    if C_QuestLog and C_QuestLog.GetQuestObjectives then
+        local ok, objectives = pcall(C_QuestLog.GetQuestObjectives, questID)
+        if not ok or type(objectives) ~= "table" or #objectives == 0 then return nil end
+        local types = {}
+        for _, objective in ipairs(objectives) do
+            if type(objective) == "table" and objective.type then
+                types[objective.type] = true
+            end
+        end
+        return next(types) and types or nil
+    end
+    -- Classic keys objectives off the quest log index. Passing the index as the
+    -- second argument avoids SelectQuestLogEntry, which would move the player's
+    -- own quest log selection out from under them.
+    if GetNumQuestLeaderBoards and GetQuestLogLeaderBoard then
+        local ok, count = pcall(GetNumQuestLeaderBoards, index)
+        if not ok or not count or count < 1 then return nil end
+        local types = {}
+        for i = 1, count do
+            local read, _, objectiveType = pcall(GetQuestLogLeaderBoard, i, index)
+            if read and objectiveType then types[objectiveType] = true end
+        end
+        return next(types) and types or nil
+    end
+    return nil
+end
+
+-- Cached per quest, because scanning every objective of a full quest log on every
+-- QUEST_LOG_UPDATE burst is wasteful. Only definitive answers are stored: quest
+-- data is not always available straight after login, and a nil there has to be
+-- retried rather than remembered as a no.
+local objectiveTypeCache = {}
+
 -- Saved variables -------------------------------------------------------------
 
 local defaults = {
     profile = {
         autoClutter = true,
+        -- Detection defaults to "object" objectives only. Ground spawns that count
+        -- items report as "item", which would also match every "collect 8 murloc
+        -- fins" kill-quest and dim the grass nearly everywhere, defeating the
+        -- point - so the broader match is opt-in.
+        autoDetect = true,
+        detectItemObjectives = false,
         verbose = false,
         -- "remembered" restores whatever the player was running at before the
         -- addon lowered it; "fixed" restores clutterHigh. Restoring to a constant
@@ -209,6 +256,7 @@ local defaults = {
         clutterLow = CLUTTER_MIN,
         clutterHigh = GetClutterDefault() or clutterMax,
         questWhitelist = {},
+        questIgnore = {},
         minimap = { hide = false },
     },
 }
@@ -250,13 +298,22 @@ local function NormalizeClutterRange()
     if profile.restoreMode ~= "fixed" then profile.restoreMode = "remembered" end
 end
 
--- Whitelist shape: profile.questWhitelist[questID] = { zones = { [uiMapID] = true } }
+-- Whitelist shape:
+--   profile.questWhitelist[questID] = { zones = { [uiMapID] = true }, auto = true? }
+-- auto marks an entry the addon added by itself; manual entries are never
+-- touched by detection and survive it being switched off.
 -- An empty zones table means "no zone learned yet"; the current zone is recorded
 -- the first time the quest is accepted or seen in the quest log.
 local function Whitelist()
     local profile = db.profile
     profile.questWhitelist = profile.questWhitelist or {}
     return profile.questWhitelist
+end
+
+local function Ignored()
+    local profile = db.profile
+    profile.questIgnore = profile.questIgnore or {}
+    return profile.questIgnore
 end
 
 -- Rebuilds the whitelist into the shape above, converting the older
@@ -276,10 +333,33 @@ local function NormalizeWhitelist()
             elseif type(entry) == "number" then
                 zones[entry] = true
             end
-            new[id] = { zones = zones }
+            new[id] = {
+                zones = zones,
+                auto = (type(entry) == "table" and entry.auto) or nil,
+            }
         end
     end
     db.profile.questWhitelist = new
+
+    local ignore = {}
+    for questID in pairs(Ignored()) do
+        local id = tonumber(questID)
+        if id then ignore[id] = true end
+    end
+    db.profile.questIgnore = ignore
+end
+
+-- true / false / nil, where nil means "cannot tell yet, ask again".
+local function QuestHasGroundObjective(index, questID)
+    local types = objectiveTypeCache[questID]
+    if not types then
+        types = GetObjectiveTypes(index, questID)
+        if not types then return nil end
+        objectiveTypeCache[questID] = types
+    end
+    if types["object"] then return true end
+    if db.profile.detectItemObjectives and types["item"] then return true end
+    return false
 end
 
 local function AddToWhitelist(questID)
@@ -555,10 +635,24 @@ local function ScanQuestLog()
     local now = Now()
     local seen = {}
     local ripening = false
+    local profile = db.profile
+    local ignore = Ignored()
     for i = 1, GetNumQuestEntries() do
         local questID = GetQuestIDForIndex(i)
         local entry = questID and whitelist[questID]
-        if entry then
+        if questID and not entry and profile.autoDetect and not ignore[questID] then
+            if QuestHasGroundObjective(i, questID) then
+                entry = AddToWhitelist(questID)
+                entry.auto = true
+                if profile.verbose then
+                    Print(string.format("Tracking quest %d - it has a search objective.",
+                        questID))
+                end
+            end
+        end
+        -- An auto entry stands down while detection is off, but is kept: its
+        -- learned zones are worth having if detection is switched back on.
+        if entry and not (entry.auto and not profile.autoDetect) then
             seen[questID] = true
             if zoneID and not NoteZone(questID, zoneID, now) then
                 ripening = true
@@ -690,6 +784,31 @@ local function RegisterOptions()
                 set = function(_, val)
                     db.profile.autoClutter = val
                     if val then UpdateAutoClutter() end
+                end,
+            },
+            autoDetect = {
+                order = 15,
+                type = "toggle",
+                name = L["Detect Search Quests"],
+                desc = L["Track quests with an objective you have to click on the ground"],
+                get = function() return db.profile.autoDetect end,
+                set = function(_, val)
+                    db.profile.autoDetect = val
+                    ScanQuestLog()
+                    UpdateAutoClutter()
+                end,
+            },
+            detectItemObjectives = {
+                order = 17,
+                type = "toggle",
+                name = L["Also Detect Collection Quests"],
+                desc = L["Much broader: matches every quest that counts items, including drops from kills"],
+                disabled = function() return not db.profile.autoDetect end,
+                get = function() return db.profile.detectItemObjectives end,
+                set = function(_, val)
+                    db.profile.detectItemObjectives = val
+                    ScanQuestLog()
+                    UpdateAutoClutter()
                 end,
             },
             verbose = {
@@ -842,7 +961,8 @@ local function SlashAdd(arg)
         Print("Could not determine a quest ID. Select a quest in the quest log or pass its index.")
         return
     end
-    AddToWhitelist(questID)
+    Ignored()[questID] = nil -- adding it by hand overrides an earlier ignore
+    AddToWhitelist(questID).auto = nil
     if IsQuestInLog(questID) then
         RememberZone(questID, GetCurrentZoneID())
     end
@@ -864,7 +984,8 @@ local function SlashList()
         local zones = {}
         for zoneID in pairs(whitelist[questID].zones) do zones[#zones + 1] = tostring(zoneID) end
         table.sort(zones)
-        Print(string.format("%d - zones: %s%s", questID,
+        Print(string.format("%d%s - zones: %s%s", questID,
+            whitelist[questID].auto and " (auto)" or "",
             #zones > 0 and table.concat(zones, ", ") or "none yet",
             activeQuests[questID] and " (in quest log)" or ""))
     end
@@ -915,13 +1036,35 @@ SlashCmdList["RAAPWHISTLE"] = function(msg)
         else
             Print("Usage: /raapwhistle remove <questID>")
         end
+    elseif cmd == "ignore" then
+        local questID = tonumber(arg)
+        if questID then
+            Ignored()[questID] = true
+            Whitelist()[questID] = nil
+            activeQuests[questID] = nil
+            Print("Ignoring quest ID " .. questID .. ".")
+            UpdateAutoClutter()
+        else
+            Print("Usage: /raapwhistle ignore <questID>")
+        end
+    elseif cmd == "unignore" then
+        local questID = tonumber(arg)
+        if questID and Ignored()[questID] then
+            Ignored()[questID] = nil
+            Print("No longer ignoring quest ID " .. questID .. ".")
+            ScanQuestLog()
+            UpdateAutoClutter()
+        else
+            Print("Usage: /raapwhistle unignore <questID>")
+        end
     elseif cmd == "list" then
         SlashList()
     elseif cmd == "zones" then
         SlashZones(arg)
     else
         Print("Usage: /raapwhistle [add [quest log index] | remove <questID> | "
-            .. "zones <questID> [clear] | list | toggle | peek [seconds]]")
+            .. "ignore <questID> | unignore <questID> | zones <questID> [clear] | "
+            .. "list | toggle | peek [seconds]]")
     end
 end
 

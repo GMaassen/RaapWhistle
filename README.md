@@ -5,9 +5,11 @@ routinely buried under grass. RaapWhistle lowers the `graphicsGroundClutter` CVa
 demand so the spawns become visible, and puts it back when you are done — no video
 options menu round-trip, no `/console` typing.
 
-It can also do this automatically: put a quest ID on the whitelist and RaapWhistle
-drops clutter while that quest is active in a zone it has learned, restoring it
-afterwards.
+Mostly it does this by itself. Quest objectives are typed, and one of those types
+is exactly what this addon exists for: **object** objectives are world objects you
+click — the buried crate, the pile of bones, "search the wreckage". RaapWhistle
+watches your quest log for those and lowers clutter while you are working on one.
+You can also whitelist quest IDs by hand.
 
 Restoring hands back **whatever you were running at**, captured on the way down —
 not a configured constant — so the addon cannot quietly change your graphics
@@ -65,7 +67,9 @@ and *Peek Ground Clutter*. Both unbound by default.
 | `/raapwhistle peek [seconds]` | lowers clutter briefly, then restores it (default 20s) |
 | `/raapwhistle add [quest log index]` | adds a quest to the whitelist; with no index, uses the quest currently selected in the quest log |
 | `/raapwhistle remove <questId>` | removes a quest ID from the whitelist |
-| `/raapwhistle list` | prints the whitelisted quest IDs |
+| `/raapwhistle list` | prints the tracked quest IDs, marking the auto-detected ones |
+| `/raapwhistle ignore <questId>` | stops tracking a quest and stops re-detecting it |
+| `/raapwhistle unignore <questId>` | undoes that |
 | `/raapwhistle zones <questId>` | prints the zones learned for a quest |
 | `/raapwhistle zones <questId> clear` | forgets them, so they can be learned again |
 
@@ -83,7 +87,28 @@ Interface → AddOns → RaapWhistle:
   when clutter was lowered. *The High Clutter Value* restores a fixed number instead.
 - **High Clutter Value** (0–9) — only used when **Restore To** is set to the fixed
   value, and disabled otherwise.
-- **Quest Whitelist** — comma-separated quest IDs that drive the automatic toggle.
+- **Detect Search Quests** (on) — track quests that have an object objective,
+  without you having to add anything.
+- **Also Detect Collection Quests** (off) — see below.
+- **Quest Whitelist** — comma-separated quest IDs tracked by hand. These are never
+  touched by detection and survive it being switched off.
+
+### What gets detected
+
+Only **object** objectives by default. Ground spawns that count *items* report as
+`item`, and so does every "collect 8 murloc fins" quest where the fins drop from
+kills — matching those would dim the grass nearly everywhere and defeat the point.
+**Also Detect Collection Quests** turns that broader match on if you would rather
+have the recall than the precision.
+
+I have not been able to check this against a live client, so which of the two is
+right for the spawns you care about is genuinely open. The setting is there so it
+is your call rather than a guess baked into the code.
+
+Detection will occasionally be wrong. `/raapwhistle ignore <questId>` is the veto —
+without it the only remedy would be switching the whole feature off. Auto-detected
+entries show as `(auto)` in `/raapwhistle list`, and adding one by hand converts it
+to a manual entry.
 
 ### Zones
 
@@ -91,7 +116,9 @@ A whitelisted quest only lowers clutter in zones it has been *seen* in, so a que
 in your log does not dim grass across the world.
 
 `/raapwhistle add` learns the zone you are standing in immediately — you asked for
-it explicitly. After that, zones are learned passively: a zone counts only once you
+it explicitly. Auto-detected quests always learn passively, so expect roughly half a
+minute in the right zone before clutter drops; add the quest by hand if you want it
+now. Passive learning works the same either way: a zone counts only once you
 are still in it 30 seconds later, so flying over somewhere on the way to an objective
 never gets it tracked. A quest holds at most 8 zones. `/raapwhistle zones <questId>
 clear` resets them if one is learned wrongly.
