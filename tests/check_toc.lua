@@ -69,7 +69,7 @@ for _, toc in ipairs(TOCS) do
         end
         if not listed then fail("%s: never loads RaapWhistle.lua", toc) end
 
-        for _, key in ipairs({ "Interface", "Title", "SavedVariables" }) do
+        for _, key in ipairs({ "Interface", "Title", "Version", "SavedVariables" }) do
             if not directives[key] or directives[key] == "" then
                 fail("%s: missing ## %s", toc, key)
             end

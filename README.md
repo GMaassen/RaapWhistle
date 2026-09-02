@@ -152,6 +152,18 @@ These cover the addon's own logic. They do **not** verify the real Blizzard even
 payloads or the true range of `graphicsGroundClutter` — those still need a live
 client.
 
+## Releases
+
+Pushing a `v*` tag builds the addon zip and attaches it to a GitHub release, via
+the [BigWigs packager](https://github.com/BigWigsMods/packager):
+
+    git tag -a v0.2.0 -m "v0.2.0" && git push origin v0.2.0
+
+`.pkgmeta` keeps `tests/` and `.github/` out of the shipped zip. Uploading to
+CurseForge, WoWInterface or Wago happens only if `CF_API_KEY`, `WOWI_API_TOKEN` or
+`WAGO_API_TOKEN` are set as repository secrets; without them the workflow just
+builds the zip, which is all a personal addon needs.
+
 ## Third-party libraries
 
 `Ace3/` and `LibDBIcon-1.0/` are vendored, unmodified copies of third-party
