@@ -23,6 +23,7 @@ local L = {
     ["Quest objective started, ground clutter reduced."] = "Quest objective started, ground clutter reduced.",
     ["Could not change ground clutter."] = "Could not change ground clutter.",
     ["Options are unavailable (Ace3 is not loaded)."] = "Options are unavailable (Ace3 is not loaded).",
+    ["Could not open the options panel."] = "Could not open the options panel.",
     ["Auto Clutter Toggle"] = "Auto Clutter Toggle",
     ["Automatically toggle ground clutter based on quest state"] = "Automatically toggle ground clutter based on quest state",
     ["Verbose"] = "Verbose",
@@ -760,10 +761,15 @@ end
 local optionsFrame
 
 local function OpenOptions()
-    if not optionsFrame then
+    local AceConfigDialog = GetLib("AceConfigDialog-3.0")
+    -- Ace3 genuinely absent is a different problem from a panel that will not
+    -- open, and reporting them with the same message sends you hunting for the
+    -- wrong thing.
+    if not optionsFrame or not AceConfigDialog then
         Print(L["Options are unavailable (Ace3 is not loaded)."])
         return
     end
+
     if Settings and Settings.OpenToCategory then
         local category = optionsFrame.categoryID or optionsFrame.name or ADDON_NAME
         -- OpenToCategory returns false for an unknown category rather than
@@ -771,13 +777,22 @@ local function OpenOptions()
         local ok, opened = pcall(Settings.OpenToCategory, category)
         if ok and opened ~= false then return end
     end
+
     if InterfaceOptionsFrame_OpenToCategory then
         -- Blizzard bug: the first call only expands the category list.
         pcall(InterfaceOptionsFrame_OpenToCategory, optionsFrame)
-        pcall(InterfaceOptionsFrame_OpenToCategory, optionsFrame)
+        if pcall(InterfaceOptionsFrame_OpenToCategory, optionsFrame) then return end
+    end
+
+    -- Last resort, and the only one that does not depend on the client's own
+    -- options frame: AceConfigDialog's standalone window. Everything the panel
+    -- offers is reachable here too.
+    if AceConfigDialog.Open
+        and pcall(AceConfigDialog.Open, AceConfigDialog, ADDON_NAME) then
         return
     end
-    Print(L["Options are unavailable (Ace3 is not loaded)."])
+
+    Print(L["Could not open the options panel."])
 end
 
 local function RegisterOptions()

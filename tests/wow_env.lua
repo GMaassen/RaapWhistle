@@ -27,6 +27,7 @@ function M.new(opts)
         -- "monster", ...). A quest absent from here has no objective data
         -- available yet, which is what a client looks like right after login.
         objectives = {},
+        opened = {},            -- appNames AceConfigDialog:Open was called with
         zone = 100,
         -- The player's own setting, which need not be the client default. Kept
         -- distinct from cvarDefault so restore-to-remembered can be told apart
@@ -93,8 +94,16 @@ function M.new(opts)
     function _G.GetTime() return env.now end
 
     _G.C_CVar = nil
-    _G.Settings = nil
-    _G.InterfaceOptionsFrame_OpenToCategory = function() end
+    if opts.api == "retail" then
+        -- Modern retail has the Settings API and no InterfaceOptionsFrame_*,
+        -- which is precisely why the options path needs a third fallback.
+        _G.InterfaceOptionsFrame_OpenToCategory = nil
+        _G.Settings = (opts.settingsOpens ~= nil)
+            and { OpenToCategory = function() return opts.settingsOpens end } or nil
+    else
+        _G.Settings = nil
+        _G.InterfaceOptionsFrame_OpenToCategory = function() end
+    end
 
     _G.C_Map = (not opts.noMap) and {
         GetBestMapForUnit = function() return env.zone end,
@@ -161,7 +170,22 @@ function M.new(opts)
         end
     end
 
-    if opts.ace then
+    -- A minimal Ace3 stand-in: just enough for the options registration path,
+    -- without dragging AceGUI and the whole widget tree into a headless test.
+    if opts.fakeOptions then
+        local libs = {
+            ["AceConfig-3.0"] = { RegisterOptionsTable = function() end },
+            ["AceConfigDialog-3.0"] = {
+                AddToBlizOptions = function(_, appName) return { name = appName } end,
+                Open = function(_, appName) env.opened[#env.opened + 1] = appName end,
+            },
+        }
+        _G.LibStub = function(name, silent)
+            local lib = libs[name]
+            if not lib and not silent then error("library " .. tostring(name) .. " not found") end
+            return lib
+        end
+    elseif opts.ace then
         dofile(M.ROOT .. "/Ace3/LibStub/LibStub.lua")
         dofile(M.ROOT .. "/Ace3/CallbackHandler-1.0/CallbackHandler-1.0.lua")
         dofile(M.ROOT .. "/Ace3/AceDB-3.0/AceDB-3.0.lua")

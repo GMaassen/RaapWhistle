@@ -571,6 +571,30 @@ test("zone learning stops at the cap", function()
     eq(zonesOf(1234)[500], nil, "ninth zone refused")
 end)
 
+-- Opening the options panel --------------------------------------------------
+
+test("retail: options fall back to the standalone window when Settings refuses", function()
+    local e = boot({ api = "retail", fakeOptions = true, settingsOpens = false })
+    e:clearPrints()
+    e:slash("")
+    eq(#e.opened, 1, "AceConfigDialog:Open was used as the fallback")
+    eq(e.opened[1], "RaapWhistle", "and opened the right options table")
+    eq(e:printCount(), 0, "with nothing reported as an error")
+end)
+
+test("retail: no fallback is used when Settings opens the panel", function()
+    local e = boot({ api = "retail", fakeOptions = true, settingsOpens = true })
+    e:slash("")
+    eq(#e.opened, 0, "the Settings panel handled it on its own")
+end)
+
+test("with no Ace3 at all, opening options says so once", function()
+    local e = boot({ api = "classic" })
+    e:clearPrints()
+    e:slash("")
+    eq(e:printCount(), 1, "reported exactly once")
+end)
+
 -- Slash command surface ------------------------------------------------------
 
 test("slash: zones lists and clears the learned zones", function()

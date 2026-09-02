@@ -23,6 +23,41 @@ local function exists(path)
     return false
 end
 
+local function dirname(path)
+    return (path:match("^(.*)/[^/]*$")) or "."
+end
+
+local function readFile(path)
+    local fh = io.open(path, "r")
+    if not fh then return nil end
+    local text = fh:read("*a")
+    fh:close()
+    return text
+end
+
+-- The .toc lists XML files, and those XML files pull in more files of their own.
+-- A reference that does not resolve is skipped silently by the client, which is
+-- how a library ends up half-loaded with no error anywhere - so follow them too.
+local seenXml = {}
+
+local function walkXml(path)
+    if seenXml[path] then return end
+    seenXml[path] = true
+    local text = readFile(path)
+    if not text then return end
+    -- A commented-out include is not a reference. Ace3 ships one.
+    text = text:gsub("<!%-%-.-%-%->", "")
+    local base = dirname(path)
+    for ref in text:gmatch('file%s*=%s*"([^"]+)"') do
+        local target = base .. "/" .. ref:gsub("\\", "/")
+        if not exists(target) then
+            fail("%s: references %s, which does not exist", path, ref)
+        elseif target:lower():match("%.xml$") then
+            walkXml(target)
+        end
+    end
+end
+
 local function trim(s)
     return (s:gsub("^%s+", ""):gsub("%s+$", ""))
 end
@@ -60,6 +95,8 @@ for _, toc in ipairs(TOCS) do
             local path = entry:gsub("\\", "/")
             if not exists(path) then
                 fail("%s: lists %s, which does not exist", toc, entry)
+            elseif path:lower():match("%.xml$") then
+                walkXml(path)
             end
         end
 
