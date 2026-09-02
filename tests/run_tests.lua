@@ -586,6 +586,31 @@ test("slash: zones lists and clears the learned zones", function()
     eq(e:clutter(), "9", "clutter restored once no zone is tracked")
 end)
 
+-- A debug dump that errors is worse than no debug dump, and the client it has to
+-- survive is exactly the one where the thing being diagnosed is missing.
+test("slash: debug dumps state on both API surfaces", function()
+    for _, api in ipairs({ "classic", "retail" }) do
+        local e = boot({ api = api })
+        e.questLog = { 1234 }
+        e.objectives[1234] = { "object" }
+        e:slash("add 1")
+        e:clearPrints()
+        e:slash("debug")
+        if e:printCount() < 8 then
+            error(api .. ": debug printed only " .. e:printCount() .. " lines")
+        end
+    end
+end)
+
+test("slash: debug still works on a client missing everything", function()
+    local e = boot({ api = "classic", noMap = true, noTimer = true, cvarFail = true })
+    e:clearPrints()
+    e:slash("debug")            -- no LibStub, no C_Map, no C_Timer, CVar writes fail
+    if e:printCount() < 6 then
+        error("debug printed only " .. e:printCount() .. " lines")
+    end
+end)
+
 test("slash: list, remove and unknown subcommands behave", function()
     local e = boot({ api = "classic" })
     e.questLog = { 1234 }

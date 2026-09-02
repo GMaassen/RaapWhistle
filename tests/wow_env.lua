@@ -76,6 +76,11 @@ function M.new(opts)
     function _G.UnitName() return "Tester" end
     function _G.GetRealmName() return "TestRealm" end
     function _G.GetLocale() return "enUS" end
+    function _G.GetAddOnMetadata(_, field)
+        return field == "Version" and "0.2.0" or nil
+    end
+    -- version, build, date, interface number
+    function _G.GetBuildInfo() return "12.0.0", "60000", "Jan 1 2026", 120000 end
     -- AceDB-3.0 reads these to build its profile keys.
     function _G.UnitClass() return "Warrior", "WARRIOR" end
     function _G.UnitRace() return "Orc", "Orc" end
@@ -91,8 +96,10 @@ function M.new(opts)
     _G.Settings = nil
     _G.InterfaceOptionsFrame_OpenToCategory = function() end
 
-    _G.C_Map = (not opts.noMap) and
-        { GetBestMapForUnit = function() return env.zone end } or nil
+    _G.C_Map = (not opts.noMap) and {
+        GetBestMapForUnit = function() return env.zone end,
+        GetMapInfo = function(mapID) return { mapID = mapID, name = "Zone " .. mapID } end,
+    } or nil
 
     if opts.noTimer then
         _G.C_Timer = nil

@@ -68,6 +68,7 @@ and *Peek Ground Clutter*. Both unbound by default.
 | `/raapwhistle add [quest log index]` | adds a quest to the whitelist; with no index, uses the quest currently selected in the quest log |
 | `/raapwhistle remove <questId>` | removes a quest ID from the whitelist |
 | `/raapwhistle list` | prints the tracked quest IDs, marking the auto-detected ones |
+| `/raapwhistle debug` | dumps client, CVar, library, quest and whitelist state |
 | `/raapwhistle ignore <questId>` | stops tracking a quest and stops re-detecting it |
 | `/raapwhistle unignore <questId>` | undoes that |
 | `/raapwhistle zones <questId>` | prints the zones learned for a quest |

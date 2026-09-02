@@ -171,6 +171,17 @@ local function GetQuestIDForIndex(index)
     return nil
 end
 
+local function GetQuestTitle(index)
+    if C_QuestLog and C_QuestLog.GetInfo then
+        local info = C_QuestLog.GetInfo(index)
+        return info and info.title
+    end
+    if GetQuestLogTitle then
+        return (GetQuestLogTitle(index))
+    end
+    return nil
+end
+
 local function GetSelectedQuestID()
     if C_QuestLog and C_QuestLog.GetSelectedQuest then
         local questID = C_QuestLog.GetSelectedQuest()
@@ -755,7 +766,10 @@ local function OpenOptions()
     end
     if Settings and Settings.OpenToCategory then
         local category = optionsFrame.categoryID or optionsFrame.name or ADDON_NAME
-        if pcall(Settings.OpenToCategory, category) then return end
+        -- OpenToCategory returns false for an unknown category rather than
+        -- erroring, so pcall succeeding is not the same as the panel opening.
+        local ok, opened = pcall(Settings.OpenToCategory, category)
+        if ok and opened ~= false then return end
     end
     if InterfaceOptionsFrame_OpenToCategory then
         -- Blizzard bug: the first call only expands the category list.
@@ -1014,6 +1028,105 @@ local function SlashZones(arg)
         #zones > 0 and table.concat(zones, ", ") or "none yet"))
 end
 
+-- One shot dump of everything worth knowing when this misbehaves in game, so a
+-- report is a single paste rather than a dozen /dump commands. Everything here
+-- is defensive: the whole point is that it still prints on a client where the
+-- thing being diagnosed is exactly what is missing.
+local function SlashDebug()
+    local metadata = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
+    local version = "?"
+    if metadata then
+        local ok, value = pcall(metadata, ADDON_NAME, "Version")
+        if ok and value then version = tostring(value) end
+    end
+    local build, interface = "?", "?"
+    if GetBuildInfo then
+        local ok, clientVersion, _, _, tocVersion = pcall(GetBuildInfo)
+        if ok then build, interface = tostring(clientVersion), tostring(tocVersion) end
+    end
+    Print(string.format("%s %s | client %s (interface %s)", ADDON_NAME, version, build, interface))
+
+    local current, default = GetClutter(), GetClutterDefault()
+    if current == nil and default == nil then
+        Print(string.format("CVar %s: MISSING - this client does not expose it", CLUTTER_CVAR))
+    else
+        Print(string.format("CVar %s = %s (default %s, ceiling %d)", CLUTTER_CVAR,
+            tostring(current), tostring(default), clutterMax))
+    end
+
+    if not LibStub then
+        Print("libs: none - LibStub did not load, running on the fallback paths")
+    else
+        local loaded = {}
+        for _, name in ipairs({ "AceDB-3.0", "AceDBOptions-3.0", "AceLocale-3.0",
+            "AceConfig-3.0", "AceConfigDialog-3.0", "AceConfigRegistry-3.0",
+            "LibDataBroker-1.1", "LibDBIcon-1.0" }) do
+            if GetLib(name) then loaded[#loaded + 1] = name end
+        end
+        Print("libs: " .. table.concat(loaded, " "))
+    end
+
+    local zoneID = GetCurrentZoneID()
+    local zoneName
+    if zoneID and C_Map and C_Map.GetMapInfo then
+        local ok, info = pcall(C_Map.GetMapInfo, zoneID)
+        if ok and type(info) == "table" then zoneName = info.name end
+    end
+    Print(string.format("map: %s%s", tostring(zoneID),
+        zoneName and (" (" .. tostring(zoneName) .. ")") or ""))
+
+    local profile = db.profile
+    Print(string.format("settings: auto=%s detect=%s item=%s restore=%s low=%s high=%s peek=%ss",
+        tostring(profile.autoClutter), tostring(profile.autoDetect),
+        tostring(profile.detectItemObjectives), tostring(profile.restoreMode),
+        tostring(profile.clutterLow), tostring(profile.clutterHigh),
+        tostring(profile.peekDuration)))
+    Print(string.format("state: applied=%s reads-as=%s peek=%s saved=%s",
+        tostring(appliedState), tostring(CurrentState()),
+        PeekActive() and "running" or "no", tostring(profile.savedClutter)))
+
+    local count = GetNumQuestEntries()
+    Print(string.format("quest log (%d entries):", count))
+    for i = 1, count do
+        local questID = GetQuestIDForIndex(i)
+        if questID then
+            local types = GetObjectiveTypes(i, questID)
+            local list = {}
+            if types then
+                for objectiveType in pairs(types) do list[#list + 1] = tostring(objectiveType) end
+                table.sort(list)
+            end
+            local verdict = QuestHasGroundObjective(i, questID)
+            Print(string.format("  %d %s | obj: %s | detect: %s", questID,
+                tostring(GetQuestTitle(i) or "?"),
+                #list > 0 and table.concat(list, ",") or "unavailable",
+                verdict == nil and "unknown" or (verdict and "YES" or "no")))
+        end
+    end
+
+    local whitelist = Whitelist()
+    local ids = {}
+    for questID in pairs(whitelist) do ids[#ids + 1] = questID end
+    table.sort(ids)
+    Print(string.format("whitelist: %s", #ids == 0 and "empty"
+        or (#ids .. (#ids == 1 and " entry" or " entries"))))
+    for _, questID in ipairs(ids) do
+        local zones = {}
+        for zoneEntry in pairs(whitelist[questID].zones) do
+            zones[#zones + 1] = tostring(zoneEntry)
+        end
+        table.sort(zones)
+        Print(string.format("  %d%s zones: %s", questID,
+            whitelist[questID].auto and " (auto)" or "",
+            #zones > 0 and table.concat(zones, ", ") or "none yet"))
+    end
+
+    local ignored = {}
+    for questID in pairs(Ignored()) do ignored[#ignored + 1] = tostring(questID) end
+    table.sort(ignored)
+    Print("ignored: " .. (#ignored > 0 and table.concat(ignored, ", ") or "none"))
+end
+
 SLASH_RAAPWHISTLE1 = "/raapwhistle"
 SlashCmdList["RAAPWHISTLE"] = function(msg)
     local cmd, arg = tostring(msg or ""):match("^%s*(%S*)%s*(.-)%s*$")
@@ -1059,12 +1172,14 @@ SlashCmdList["RAAPWHISTLE"] = function(msg)
         end
     elseif cmd == "list" then
         SlashList()
+    elseif cmd == "debug" then
+        SlashDebug()
     elseif cmd == "zones" then
         SlashZones(arg)
     else
         Print("Usage: /raapwhistle [add [quest log index] | remove <questID> | "
             .. "ignore <questID> | unignore <questID> | zones <questID> [clear] | "
-            .. "list | toggle | peek [seconds]]")
+            .. "list | toggle | peek [seconds] | debug]")
     end
 end
 
