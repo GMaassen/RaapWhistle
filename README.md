@@ -15,7 +15,7 @@ drops clutter while that quest is active, restoring it afterwards.
 | Retail (Midnight) | `RaapWhistle_Mainline.toc` | 120100 |
 | Classic Era | `RaapWhistle_Vanilla.toc` | 11509 |
 | Burning Crusade Classic | `RaapWhistle_TBC.toc` | 20506 |
-| Wrath / Titan Reforged | `RaapWhistle_Wrath.toc` | 38002 |
+| Wrath Classic (3.4.5) | `RaapWhistle_Wrath.toc` | 30405 |
 | anything else (fallback) | `RaapWhistle.toc` | multi-value |
 
 `RaapWhistle.toc` is the generic fallback the client uses when no flavor-specific file
@@ -74,12 +74,22 @@ The addon can be exercised outside the game against a mock client, which is usef
 when you don't have WoW installed. Requires a standalone Lua 5.x on PATH.
 
     lua tests/run_tests.lua
+    lua tests/check_toc.lua
 
 `tests/wow_env.lua` fakes the client API and can present either the Wrath Classic
 3.4.x surface (`GetQuestLogTitle` / `GetQuestLogSelection`) or the retail one
 (`C_QuestLog`), with options to drop `C_Timer`, drop LibStub entirely, cap the
 clutter CVar the way a client would, or make `SetCVar` fail. The AceDB test loads
 the real vendored `Ace3/AceDB-3.0`.
+
+`tests/check_toc.lua` is a static pass over the `.toc` manifests: every listed file
+must exist, every flavor must load the same files in the same order, and the
+declared interface numbers and `## SavedVariables` must be well formed. This is the
+failure that made the addon dead on arrival — Ace3 sat in the repo, referenced by
+nothing — so it is worth catching mechanically.
+
+Both run on every push and pull request (`.github/workflows/tests.yml`), against
+Lua 5.1 (what the game runs) and 5.4.
 
 These cover the addon's own logic. They do **not** verify the real Blizzard event
 payloads or the true range of `graphicsGroundClutter` — those still need a live
