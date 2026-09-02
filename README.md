@@ -47,8 +47,14 @@ folder — they are loaded from the .toc, not as standalone addons.
 **Minimap button** — left-click toggles ground clutter between the low and high
 values. The button can be dragged around the minimap and hidden via LibDBIcon.
 
-**Keybinding** — Game Menu → Key Bindings → RaapWhistle → *Toggle Ground Clutter*.
-Unbound by default.
+**Peek** — the usual reason to want this is "let me see for twenty seconds".
+`/raapwhistle peek` drops clutter and puts it back on its own, so you cannot forget
+and leave the client on low grass. Peeking again while one is running extends it
+rather than starting a second; a manual toggle cancels it; and if you walk into a
+tracked quest zone mid-peek, clutter simply stays low.
+
+**Keybinding** — Game Menu → Key Bindings → RaapWhistle → *Toggle Ground Clutter*
+and *Peek Ground Clutter*. Both unbound by default.
 
 **Slash command** — `/raapwhistle`:
 
@@ -56,6 +62,7 @@ Unbound by default.
 | --- | --- |
 | `/raapwhistle` | opens the options panel |
 | `/raapwhistle toggle` | toggles ground clutter now |
+| `/raapwhistle peek [seconds]` | lowers clutter briefly, then restores it (default 20s) |
 | `/raapwhistle add [quest log index]` | adds a quest to the whitelist; with no index, uses the quest currently selected in the quest log |
 | `/raapwhistle remove <questId>` | removes a quest ID from the whitelist |
 | `/raapwhistle list` | prints the whitelisted quest IDs |
@@ -71,6 +78,7 @@ Interface → AddOns → RaapWhistle:
 - **Low Clutter Value** (0–9) — the value used when clutter is reduced. 0 is the
   clearest. Always kept below the high value; the two meeting would leave the addon
   unable to tell the states apart.
+- **Peek Duration** — how long `/raapwhistle peek` and the peek keybinding last.
 - **Restore To** — *Whatever it was before* (default) hands back the value captured
   when clutter was lowered. *The High Clutter Value* restores a fixed number instead.
 - **High Clutter Value** (0–9) — only used when **Restore To** is set to the fixed

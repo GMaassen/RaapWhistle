@@ -39,6 +39,11 @@ local L = {
     ["Comma-separated quest IDs to auto-toggle"] = "Comma-separated quest IDs to auto-toggle",
     ["Profiles"] = "Profiles",
     ["Toggle Ground Clutter"] = "Toggle Ground Clutter",
+    ["Peek Ground Clutter"] = "Peek Ground Clutter",
+    ["Peek Duration"] = "Peek Duration",
+    ["How long a peek lasts, in seconds"] = "How long a peek lasts, in seconds",
+    ["Ground clutter lowered for %d seconds."] = "Ground clutter lowered for %d seconds.",
+    ["Peek ended, ground clutter restored."] = "Peek ended, ground clutter restored.",
 }
 
 do
@@ -200,6 +205,7 @@ local defaults = {
         -- silently raises the graphics of anyone not already on the client
         -- default, so remembering is the default.
         restoreMode = "remembered",
+        peekDuration = 20,
         clutterLow = CLUTTER_MIN,
         clutterHigh = GetClutterDefault() or clutterMax,
         questWhitelist = {},
@@ -370,6 +376,14 @@ local activeQuests = {} -- questID -> true for whitelisted quests currently in t
 local appliedState      -- "low" / "high": last state this addon applied
 local errorShown = false
 
+-- Timestamp a running peek expires at, nil when no peek is running. Declared up
+-- here because the automatic logic has to know to keep its hands off.
+local peekUntil
+
+local function PeekActive()
+    return peekUntil ~= nil
+end
+
 local function CurrentState()
     local current = GetClutter()
     if not current then return appliedState end
@@ -422,6 +436,7 @@ end
 
 -- User initiated: always allowed, always announced, ignores autoClutter.
 local function ToggleGroundClutter()
+    peekUntil = nil -- an explicit toggle takes over from any running peek
     ApplyState(CurrentState() == "low" and "high" or "low", true)
 end
 
@@ -442,6 +457,7 @@ end
 local function UpdateAutoClutter()
     local profile = db.profile
     if not profile.autoClutter then return end
+    if PeekActive() then return end -- a peek is explicit; do not fight it
     local desired = DesiredAutoState()
     if desired == CurrentState() then
         appliedState = desired -- already in the desired state; stay quiet
@@ -451,6 +467,82 @@ local function UpdateAutoClutter()
         Print(desired == "low" and L["Quest objective started, ground clutter reduced."]
             or L["Quest objective complete, ground clutter restored."])
     end
+end
+
+-- Peek ------------------------------------------------------------------------
+-- The actual use case is "let me see for twenty seconds", not a sticky toggle,
+-- and a peek that restores itself cannot leave the client stuck on low grass.
+
+local PEEK_MIN, PEEK_MAX = 1, 600
+
+local SchedulePeekExpiry, CheckPeek -- mutually recursive; see below
+local peekFrame
+
+local function EndPeek()
+    if not peekUntil then return end
+    peekUntil = nil
+    -- Walking into a tracked quest zone mid-peek means low is now the correct
+    -- state on its own merits, so end the peek without raising clutter again.
+    if db.profile.autoClutter and DesiredAutoState() == "low" then
+        appliedState = "low"
+        return
+    end
+    if ApplyState("high", false) then
+        Print(L["Peek ended, ground clutter restored."])
+    end
+end
+
+-- No C_Timer on the oldest clients, so drive the expiry from OnUpdate instead.
+-- Created on demand: every client that has C_Timer never needs this frame.
+local function StartPeekTicker()
+    if not peekFrame then
+        if not CreateFrame then return end
+        peekFrame = CreateFrame("Frame")
+    end
+    peekFrame:SetScript("OnUpdate", function(self)
+        if not peekUntil then
+            self:SetScript("OnUpdate", nil)
+            return
+        end
+        if Now() >= peekUntil then
+            self:SetScript("OnUpdate", nil)
+            EndPeek()
+        end
+    end)
+end
+
+function SchedulePeekExpiry()
+    if not peekUntil then return end
+    if C_Timer and C_Timer.After then
+        C_Timer.After(math.max(0.1, peekUntil - Now()), CheckPeek)
+        return
+    end
+    StartPeekTicker()
+end
+
+-- A peek that was extended leaves an early timer behind, so re-check the clock
+-- rather than trusting the timer to mean the peek is over.
+function CheckPeek()
+    if not peekUntil then return end
+    if Now() >= peekUntil then
+        EndPeek()
+    else
+        SchedulePeekExpiry()
+    end
+end
+
+local function StartPeek(seconds)
+    local profile = db.profile
+    seconds = tonumber(seconds) or tonumber(profile.peekDuration) or 20
+    seconds = math.floor(seconds)
+    if seconds < PEEK_MIN then seconds = PEEK_MIN end
+    if seconds > PEEK_MAX then seconds = PEEK_MAX end
+
+    -- Do not start the clock until the CVar write has actually landed.
+    if not PeekActive() and not ApplyState("low", false) then return end
+    peekUntil = Now() + seconds
+    Print(string.format(L["Ground clutter lowered for %d seconds."], seconds))
+    SchedulePeekExpiry()
 end
 
 -- Quest tracking --------------------------------------------------------------
@@ -607,6 +699,20 @@ local function RegisterOptions()
                 desc = L["Announce automatic ground clutter changes in chat"],
                 get = function() return db.profile.verbose end,
                 set = function(_, val) db.profile.verbose = val end,
+            },
+            peekDuration = {
+                order = 25,
+                type = "range",
+                name = L["Peek Duration"],
+                desc = L["How long a peek lasts, in seconds"],
+                min = PEEK_MIN, max = 120, step = 1,
+                get = function() return db.profile.peekDuration end,
+                set = function(_, val)
+                    local seconds = math.floor(tonumber(val) or 20)
+                    if seconds < PEEK_MIN then seconds = PEEK_MIN end
+                    if seconds > PEEK_MAX then seconds = PEEK_MAX end
+                    db.profile.peekDuration = seconds
+                end,
             },
             clutterLow = {
                 order = 30,
@@ -795,6 +901,8 @@ SlashCmdList["RAAPWHISTLE"] = function(msg)
         OpenOptions()
     elseif cmd == "toggle" then
         ToggleGroundClutter()
+    elseif cmd == "peek" then
+        StartPeek(arg)
     elseif cmd == "add" then
         SlashAdd(arg)
     elseif cmd == "remove" or cmd == "del" then
@@ -813,7 +921,7 @@ SlashCmdList["RAAPWHISTLE"] = function(msg)
         SlashZones(arg)
     else
         Print("Usage: /raapwhistle [add [quest log index] | remove <questID> | "
-            .. "zones <questID> [clear] | list | toggle]")
+            .. "zones <questID> [clear] | list | toggle | peek [seconds]]")
     end
 end
 
@@ -821,9 +929,14 @@ end
 
 BINDING_HEADER_RAAPWHISTLE = L["RaapWhistle"]
 BINDING_NAME_RAAPWHISTLE_TOGGLE = L["Toggle Ground Clutter"]
+BINDING_NAME_RAAPWHISTLE_PEEK = L["Peek Ground Clutter"]
 
 function RaapWhistle_ToggleBinding()
     ToggleGroundClutter()
+end
+
+function RaapWhistle_PeekBinding()
+    StartPeek()
 end
 
 -- Events ----------------------------------------------------------------------

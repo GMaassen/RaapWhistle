@@ -2,4 +2,7 @@
 	<Binding name="RAAPWHISTLE_TOGGLE" header="RAAPWHISTLE" category="ADDONS" runOnUp="false">
 		RaapWhistle_ToggleBinding()
 	</Binding>
+	<Binding name="RAAPWHISTLE_PEEK" header="RAAPWHISTLE" category="ADDONS" runOnUp="false">
+		RaapWhistle_PeekBinding()
+	</Binding>
 </Bindings>

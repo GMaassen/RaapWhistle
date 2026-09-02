@@ -311,6 +311,88 @@ test("an inverted low/high pair is repaired on load", function()
     end
 end)
 
+-- Peek -----------------------------------------------------------------------
+
+test("peek lowers clutter and puts it back on its own", function()
+    local e = boot({ api = "classic", cvarStart = 7 })
+    if type(_G.RaapWhistle_PeekBinding) ~= "function" then
+        error("the peek keybinding global was never created")
+    end
+    e:slash("peek 10")
+    eq(e:clutter(), "0", "lowered for the peek")
+    e:flush(10)
+    eq(e:clutter(), "7", "restored when the peek expired")
+end)
+
+test("peek restores without C_Timer, through the OnUpdate fallback", function()
+    local e = boot({ api = "classic", cvarStart = 7, noTimer = true })
+    e:slash("peek 10")
+    eq(e:clutter(), "0", "lowered")
+    e:tick(4)
+    eq(e:clutter(), "0", "still peeking")
+    e:tick(6)
+    eq(e:clutter(), "7", "restored by the ticker")
+end)
+
+test("a second peek extends rather than stacking", function()
+    local e = boot({ api = "classic", cvarStart = 7 })
+    e:slash("peek 10")
+    e:flush(5)
+    e:slash("peek 10")           -- expires at 15 now, not 10
+    e:flush(6)                   -- clock at 11
+    eq(e:clutter(), "0", "extended peek still running")
+    e:flush(5)                   -- clock at 16
+    eq(e:clutter(), "7", "restored once the extension expired")
+end)
+
+test("the automatic toggle does not fight a running peek", function()
+    local e = boot({ api = "classic", cvarStart = 7 })
+    e.questLog = { 1234 }
+    e:slash("add 1")             -- tracked in zone 100
+    e.zone = 200
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    eq(e:clutter(), "7", "restored outside the tracked zone")
+    e:slash("peek 10")
+    eq(e:clutter(), "0", "peeking")
+    e:fire("ZONE_CHANGED")       -- the automatic logic would want high here
+    eq(e:clutter(), "0", "peek held")
+    e:flush(10)
+    eq(e:clutter(), "7", "and released afterwards")
+end)
+
+test("a peek ending inside a tracked zone stays low", function()
+    local e = boot({ api = "classic", cvarStart = 7 })
+    e.questLog = { 1234 }
+    e:slash("add 1")             -- zone 100 tracked
+    e.zone = 200
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    eq(e:clutter(), "7", "high outside the tracked zone")
+    e:slash("peek 10")
+    e.zone = 100                 -- walked back in mid-peek
+    e:flush(10)
+    eq(e:clutter(), "0", "stayed low, because the quest wants it low anyway")
+end)
+
+test("a manual toggle cancels a running peek", function()
+    local e = boot({ api = "classic", cvarStart = 7 })
+    e.questLog = { 1234 }
+    e:slash("add 1")             -- tracked in zone 100
+    e.zone = 200
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    eq(e:clutter(), "7", "high outside the tracked zone")
+    e:slash("peek 60")
+    eq(e:clutter(), "0", "peeking")
+    e:slash("toggle")
+    eq(e:clutter(), "7", "toggled back up")
+    -- Restoring the same value the peek would have restored proves nothing, so
+    -- check the thing a leftover peek would still be blocking: automatic control.
+    e.zone = 100
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    eq(e:clutter(), "0", "the automatic toggle is live again straight away")
+    e:flush(60)
+    eq(e:clutter(), "0", "and the abandoned peek does not disturb it later")
+end)
+
 -- Zone learning --------------------------------------------------------------
 
 local function zonesOf(questID)

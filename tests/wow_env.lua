@@ -11,8 +11,9 @@ M.ROOT = "."
 
 -- Globals the addon creates; cleared between runs so each load starts clean.
 local ADDON_GLOBALS = {
-    "RaapWhistle_ToggleBinding", "BINDING_HEADER_RAAPWHISTLE",
-    "BINDING_NAME_RAAPWHISTLE_TOGGLE", "SLASH_RAAPWHISTLE1",
+    "RaapWhistle_ToggleBinding", "RaapWhistle_PeekBinding",
+    "BINDING_HEADER_RAAPWHISTLE", "BINDING_NAME_RAAPWHISTLE_TOGGLE",
+    "BINDING_NAME_RAAPWHISTLE_PEEK", "SLASH_RAAPWHISTLE1",
 }
 
 function M.new(opts)
@@ -142,9 +143,14 @@ function M.new(opts)
         return self
     end
 
+    -- The addon may create other frames (the peek ticker), so find the one
+    -- actually listening for events rather than assuming it was created last.
     function env:fire(...)
-        local f = self.frames[#self.frames]
-        return f.scripts.OnEvent(f, ...)
+        for i = #self.frames, 1, -1 do
+            local f = self.frames[i]
+            if f.scripts.OnEvent then return f.scripts.OnEvent(f, ...) end
+        end
+        error("no frame is handling events")
     end
 
     function env:slash(msg) _G.SlashCmdList["RAAPWHISTLE"](msg) end
@@ -157,6 +163,17 @@ function M.new(opts)
         local pending = self.timers
         self.timers = {}
         for _, t in ipairs(pending) do t.fn() end
+    end
+
+    -- Advances the clock and runs OnUpdate handlers, for the code paths that
+    -- fall back to a ticker when C_Timer is unavailable.
+    function env:tick(seconds)
+        seconds = seconds or 1
+        self.now = self.now + seconds
+        for _, f in ipairs(self.frames) do
+            local fn = f.scripts.OnUpdate
+            if fn then fn(f, seconds) end
+        end
     end
 
     function env:clearPrints() self.prints = {} end
