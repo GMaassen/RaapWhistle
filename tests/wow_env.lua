@@ -3,7 +3,8 @@
 -- Each env installs a fresh set of globals, so a test can pick the API surface
 -- it wants: "classic" (Wrath 3.4.x - GetQuestLogTitle/GetQuestLogSelection) or
 -- "retail" (C_QuestLog). Options let a test drop C_Timer, drop LibStub, make
--- SetCVar fail, or cap the clutter ceiling the way a real client would.
+-- SetCVar fail, cap the clutter ceiling the way a real client would, or start
+-- the clutter CVar somewhere other than the client default.
 
 local M = {}
 M.ROOT = "."
@@ -22,7 +23,10 @@ function M.new(opts)
         timers = {},
         questLog = {},          -- array of questIDs, in log order
         zone = 100,
-        cvars = { graphicsGroundClutter = "9" },
+        -- The player's own setting, which need not be the client default. Kept
+        -- distinct from cvarDefault so restore-to-remembered can be told apart
+        -- from restore-to-a-constant.
+        cvars = { graphicsGroundClutter = tostring(opts.cvarStart or 9) },
         cvarCeiling = opts.cvarCeiling,   -- client silently refuses above this
         cvarFail = opts.cvarFail or false,
     }

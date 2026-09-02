@@ -257,7 +257,139 @@ test("works without C_Timer", function()
     eq(e:clutter(), "0", "scan still ran without a timer")
 end)
 
+-- Restore behaviour ----------------------------------------------------------
+
+test("restore hands back the player's own value, not the client default", function()
+    local e = boot({ api = "classic", cvarStart = 4, cvarDefault = 9 })
+    e:slash("toggle")
+    eq(e:clutter(), "0", "lowered")
+    e:slash("toggle")
+    eq(e:clutter(), "4", "restored to what the player was running at")
+end)
+
+test("the remembered value survives a reload", function()
+    local e = boot({ api = "classic", cvarStart = 4 })
+    e:slash("toggle")
+    eq(e:clutter(), "0", "lowered")
+    local saved = RaapWhistleDB
+    -- The CVar persists in the client config, so the next session starts low.
+    -- The login scan should hand back the remembered value, not the default.
+    local e2 = boot({ api = "classic", cvarStart = 0, cvarDefault = 9, savedVars = saved })
+    eq(e2:clutter(), "4", "login restored the remembered value across the reload")
+end)
+
+test("restoreMode=fixed uses the configured high value", function()
+    local saved = {
+        profileKeys = { ["Tester - TestRealm"] = "Default" },
+        profiles = { Default = { restoreMode = "fixed", clutterLow = 0, clutterHigh = 7 } },
+    }
+    local e = boot({ api = "classic", cvarStart = 4, savedVars = saved })
+    e:slash("toggle")
+    eq(e:clutter(), "0", "lowered")
+    e:slash("toggle")
+    eq(e:clutter(), "7", "restored to the configured value")
+end)
+
+test("logout restores clutter instead of leaving the client low", function()
+    local e = boot({ api = "classic", cvarStart = 6 })
+    e:slash("toggle")
+    eq(e:clutter(), "0", "lowered")
+    e:fire("PLAYER_LOGOUT")
+    eq(e:clutter(), "6", "restored on the way out")
+end)
+
+test("an inverted low/high pair is repaired on load", function()
+    local saved = {
+        profileKeys = { ["Tester - TestRealm"] = "Default" },
+        profiles = { Default = { clutterLow = 9, clutterHigh = 0 } },
+    }
+    boot({ api = "classic", savedVars = saved })
+    local profile = saved.profiles.Default
+    if profile.clutterLow >= profile.clutterHigh then
+        error(string.format("low %s is not below high %s",
+            tostring(profile.clutterLow), tostring(profile.clutterHigh)))
+    end
+end)
+
+-- Zone learning --------------------------------------------------------------
+
+local function zonesOf(questID)
+    return RaapWhistleDB.profiles["Default"].questWhitelist[questID].zones
+end
+
+test("a zone flown over is not learned", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e:slash("add 1")             -- learns zone 100 explicitly
+    e.zone = 200
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    e:flush(1)                   -- a candidate opens on 200
+    e.zone = 300                 -- moved on well inside the dwell time
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    e:flush(2)
+    eq(zonesOf(1234)[200], nil, "flyover zone not learned")
+    eq(zonesOf(1234)[100], true, "the explicit zone is still there")
+end)
+
+-- The flyover test above only proves two sightings are needed. This one is what
+-- proves the dwell *time* matters: same zone twice, but far too close together.
+test("two quick sightings of the same zone are not enough", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e:slash("add 1")
+    e.zone = 200
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    e:flush(1)                   -- first sighting opens the candidate
+    e:fire("QUEST_LOG_UPDATE")
+    e:flush(2)                   -- seen again, but only seconds later
+    eq(zonesOf(1234)[200], nil, "still well inside the dwell window")
+    e:flush(31)
+    eq(zonesOf(1234)[200], true, "learned once the dwell time really passes")
+end)
+
+test("a zone stayed in is learned once the dwell time passes", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e:slash("add 1")
+    e.zone = 200
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    e:flush(1)
+    eq(zonesOf(1234)[200], nil, "not learned on first sighting")
+    e:flush(31)                  -- still there well past the dwell time
+    eq(zonesOf(1234)[200], true, "second zone learned")
+    eq(e:clutter(), "0", "and it lowers clutter here now")
+end)
+
+test("zone learning stops at the cap", function()
+    local zones = {}
+    for i = 1, 8 do zones[i] = true end
+    local saved = {
+        profileKeys = { ["Tester - TestRealm"] = "Default" },
+        profiles = { Default = { questWhitelist = { [1234] = { zones = zones } } } },
+    }
+    local e = boot({ api = "classic", savedVars = saved })
+    e.questLog = { 1234 }
+    e.zone = 500
+    e:fire("ZONE_CHANGED_NEW_AREA")
+    e:flush(1)
+    e:flush(31)
+    eq(zonesOf(1234)[500], nil, "ninth zone refused")
+end)
+
 -- Slash command surface ------------------------------------------------------
+
+test("slash: zones lists and clears the learned zones", function()
+    local e = boot({ api = "classic" })
+    e.questLog = { 1234 }
+    e:slash("add 1")
+    eq(e:clutter(), "0", "low in the learned zone")
+    e:clearPrints()
+    e:slash("zones 1234")
+    eq(e:printCount(), 1, "zones printed one line")
+    e:slash("zones 1234 clear")
+    eq(next(zonesOf(1234)), nil, "zones cleared")
+    eq(e:clutter(), "9", "clutter restored once no zone is tracked")
+end)
 
 test("slash: list, remove and unknown subcommands behave", function()
     local e = boot({ api = "classic" })

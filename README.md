@@ -6,7 +6,13 @@ demand so the spawns become visible, and puts it back when you are done — no v
 options menu round-trip, no `/console` typing.
 
 It can also do this automatically: put a quest ID on the whitelist and RaapWhistle
-drops clutter while that quest is active, restoring it afterwards.
+drops clutter while that quest is active in a zone it has learned, restoring it
+afterwards.
+
+Restoring hands back **whatever you were running at**, captured on the way down —
+not a configured constant — so the addon cannot quietly change your graphics
+settings. It also restores on logout, since the CVar persists in the client config
+and would otherwise follow you around even with the addon uninstalled.
 
 ## Supported versions
 
@@ -53,18 +59,34 @@ Unbound by default.
 | `/raapwhistle add [quest log index]` | adds a quest to the whitelist; with no index, uses the quest currently selected in the quest log |
 | `/raapwhistle remove <questId>` | removes a quest ID from the whitelist |
 | `/raapwhistle list` | prints the whitelisted quest IDs |
+| `/raapwhistle zones <questId>` | prints the zones learned for a quest |
+| `/raapwhistle zones <questId> clear` | forgets them, so they can be learned again |
 
 ## Options
 
 Interface → AddOns → RaapWhistle:
 
 - **Auto Clutter Toggle** — automatically lower clutter while a whitelisted quest is
-  active in its zone, and restore it when it is not.
+  active in one of its learned zones, and restore it when it is not.
 - **Low Clutter Value** (0–9) — the value used when clutter is reduced. 0 is the
-  clearest.
-- **High Clutter Value** (0–9) — the value restored afterwards. Set this to whatever
-  your normal graphics preset uses (9 on Ultra).
+  clearest. Always kept below the high value; the two meeting would leave the addon
+  unable to tell the states apart.
+- **Restore To** — *Whatever it was before* (default) hands back the value captured
+  when clutter was lowered. *The High Clutter Value* restores a fixed number instead.
+- **High Clutter Value** (0–9) — only used when **Restore To** is set to the fixed
+  value, and disabled otherwise.
 - **Quest Whitelist** — comma-separated quest IDs that drive the automatic toggle.
+
+### Zones
+
+A whitelisted quest only lowers clutter in zones it has been *seen* in, so a quest
+in your log does not dim grass across the world.
+
+`/raapwhistle add` learns the zone you are standing in immediately — you asked for
+it explicitly. After that, zones are learned passively: a zone counts only once you
+are still in it 30 seconds later, so flying over somewhere on the way to an objective
+never gets it tracked. A quest holds at most 8 zones. `/raapwhistle zones <questId>
+clear` resets them if one is learned wrongly.
 - **Profiles** — standard AceDB profile management; settings live in
   `RaapWhistleDB`.
 
